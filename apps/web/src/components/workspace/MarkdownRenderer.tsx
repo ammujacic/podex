@@ -840,6 +840,23 @@ const CodeBlock = memo(function CodeBlock({
     []
   );
 
+  const isPlainText = normalizedLang === 'text';
+
+  // Simpler rendering for plain text blocks
+  if (isPlainText) {
+    return (
+      <div className="relative group my-2 rounded-md overflow-hidden bg-surface-elevated/30 border border-border-subtle">
+        <div className="flex items-center justify-end gap-2 px-3 py-1.5 border-b border-border-subtle/50">
+          <CopyButton content={content} />
+          <SaveToFileButton content={content} language={language} />
+        </div>
+        <pre className="p-3 overflow-x-auto text-sm font-mono leading-relaxed">
+          <code className="text-text-secondary whitespace-pre-wrap break-words">{content}</code>
+        </pre>
+      </div>
+    );
+  }
+
   return (
     <div className="relative group my-2 rounded-md overflow-hidden bg-void/80">
       {/* Header with language and top copy button */}

@@ -16,6 +16,37 @@ from src.config import settings
 
 logger = structlog.get_logger()
 
+# Claude Code identity - REQUIRED for OAuth tokens to work
+# This must be the first line of the system prompt when using OAuth tokens (sk-ant-oat-*)
+CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
+
+
+def _is_oauth_token(api_key: str | None) -> bool:
+    """Check if the API key is an Anthropic OAuth token."""
+    return api_key is not None and api_key.startswith("sk-ant-oat")
+
+
+def _build_system_prompt_for_oauth(system_message: str, is_oauth: bool) -> str:
+    """Build system prompt, prepending Claude Code identity for OAuth tokens.
+
+    When using OAuth tokens, Anthropic requires the system prompt to include
+    the Claude Code identity as the first line. This is how they verify the
+    token is being used by a legitimate Claude Code-like application.
+
+    Args:
+        system_message: The original system message
+        is_oauth: Whether we're using an OAuth token
+
+    Returns:
+        The system prompt, with Claude Code identity prepended if using OAuth
+    """
+    if not is_oauth:
+        return system_message
+
+    if system_message:
+        return f"{CLAUDE_CODE_IDENTITY}\n\n{system_message}"
+    return CLAUDE_CODE_IDENTITY
+
 
 @dataclass
 class CompletionRequest:
@@ -537,10 +568,16 @@ class LLMProvider:
         """
         # Get appropriate client (with user key or platform default)
         client = self._get_anthropic_client(api_key)
+        is_oauth = _is_oauth_token(api_key)
 
         # Resolve model ID (strip prefix if present)
         resolved_model = self._resolve_anthropic_model_id(model)
-        logger.info("Anthropic API call", original_model=model, resolved_model=resolved_model)
+        logger.info(
+            "Anthropic API call",
+            original_model=model,
+            resolved_model=resolved_model,
+            is_oauth_token=is_oauth,
+        )
 
         # Extract system message
         system_message = ""
@@ -560,8 +597,11 @@ class LLMProvider:
             "messages": conversation_messages,
         }
 
-        if system_message:
-            request_params["system"] = system_message
+        # For OAuth tokens, we MUST include Claude Code identity in the system prompt
+        # This is required by Anthropic for OAuth token authorization
+        final_system = _build_system_prompt_for_oauth(system_message, is_oauth)
+        if final_system:
+            request_params["system"] = final_system
 
         if tools:
             request_params["tools"] = tools
@@ -877,10 +917,16 @@ class LLMProvider:
         """
         # Get appropriate client (with user key or platform default)
         client = self._get_anthropic_client(api_key)
+        is_oauth = _is_oauth_token(api_key)
 
         # Resolve model ID (strip prefix if present)
         resolved_model = self._resolve_anthropic_model_id(model)
-        logger.info("Anthropic API call", original_model=model, resolved_model=resolved_model)
+        logger.info(
+            "Anthropic API call (streaming)",
+            original_model=model,
+            resolved_model=resolved_model,
+            is_oauth_token=is_oauth,
+        )
 
         # Extract system message
         system_message = ""
@@ -900,8 +946,11 @@ class LLMProvider:
             "messages": conversation_messages,
         }
 
-        if system_message:
-            request_params["system"] = system_message
+        # For OAuth tokens, we MUST include Claude Code identity in the system prompt
+        # This is required by Anthropic for OAuth token authorization
+        final_system = _build_system_prompt_for_oauth(system_message, is_oauth)
+        if final_system:
+            request_params["system"] = final_system
 
         if tools:
             request_params["tools"] = tools

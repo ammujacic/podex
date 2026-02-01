@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { keybindingManager } from '@/lib/keybindings';
 import { useEditorStore } from '@/stores/editor';
 import { useUIStore } from '@/stores/ui';
-import { useTerminalStore } from '@/stores/terminal';
+import { useSessionStore } from '@/stores/session';
 
 /**
  * Registers workspace-wide keybinding command handlers that are not
@@ -27,9 +27,7 @@ export function useWorkspaceKeybindingCommands(sessionId: string) {
   const panes = useEditorStore((s) => s.panes);
   const activePaneId = useEditorStore((s) => s.activePaneId);
 
-  const getLayout = useTerminalStore((s) => s.getLayout);
-  const getActivePane = useTerminalStore((s) => s.getActivePane);
-  const addTerminalTab = useTerminalStore((s) => s.addTab);
+  const addTerminalWindow = useSessionStore((s) => s.addTerminalWindow);
 
   const router = useRouter();
 
@@ -138,17 +136,7 @@ export function useWorkspaceKeybindingCommands(sessionId: string) {
 
     // ==================== Terminal ====================
     keybindingManager.registerCommand('terminal.new', () => {
-      const layout = getLayout(sessionId);
-      if (!layout) {
-        toast.error('No terminal layout for this session yet.');
-        return;
-      }
-      const activePane = getActivePane(sessionId);
-      if (!activePane) {
-        toast.error('No active terminal pane.');
-        return;
-      }
-      addTerminalTab(sessionId, activePane.id);
+      addTerminalWindow(sessionId);
       announce('New terminal created');
     });
 
@@ -280,12 +268,10 @@ export function useWorkspaceKeybindingCommands(sessionId: string) {
   }, [
     activePaneId,
     addPanel,
-    addTerminalTab,
+    addTerminalWindow,
     announce,
     closeTab,
-    getActivePane,
     getActiveTab,
-    getLayout,
     getTabsForPane,
     paneOrder,
     panes,

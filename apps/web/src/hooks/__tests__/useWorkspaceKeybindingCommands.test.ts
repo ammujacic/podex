@@ -57,17 +57,8 @@ const mockEditorStore = {
   activePaneId: 'pane-1',
 };
 
-const mockTerminalStore = {
-  getLayout: vi.fn(() => ({
-    id: 'layout-1',
-    sessionId: 'session-123',
-    panes: [],
-  })),
-  getActivePane: vi.fn(() => ({
-    id: 'term-pane-1',
-    activeTabId: 'term-tab-1',
-  })),
-  addTab: vi.fn(),
+const mockSessionStore = {
+  addTerminalWindow: vi.fn(),
 };
 
 vi.mock('@/stores/ui', () => ({
@@ -88,12 +79,12 @@ vi.mock('@/stores/editor', () => ({
   }),
 }));
 
-vi.mock('@/stores/terminal', () => ({
-  useTerminalStore: vi.fn((selector) => {
+vi.mock('@/stores/session', () => ({
+  useSessionStore: vi.fn((selector) => {
     if (typeof selector === 'function') {
-      return selector(mockTerminalStore);
+      return selector(mockSessionStore);
     }
-    return mockTerminalStore;
+    return mockSessionStore;
   }),
 }));
 
@@ -557,44 +548,8 @@ describe('useWorkspaceKeybindingCommands', () => {
 
       handler();
 
-      expect(mockTerminalStore.addTab).toHaveBeenCalledWith(mockSessionId, 'term-pane-1');
+      expect(mockSessionStore.addTerminalWindow).toHaveBeenCalledWith(mockSessionId);
       expect(mockUIStore.announce).toHaveBeenCalledWith('New terminal created');
-    });
-
-    it('should show error if no terminal layout exists', () => {
-      mockTerminalStore.getLayout.mockReturnValue(null);
-
-      renderHook(() => useWorkspaceKeybindingCommands(mockSessionId));
-
-      const registerCalls = vi.mocked(keybindingManager.registerCommand).mock.calls;
-      const newTermCall = registerCalls.find((call) => call[0] === 'terminal.new');
-      const handler = newTermCall![1];
-
-      handler();
-
-      expect(toast.error).toHaveBeenCalledWith('No terminal layout for this session yet.');
-      expect(mockTerminalStore.addTab).not.toHaveBeenCalled();
-    });
-
-    it('should show error if no active terminal pane', () => {
-      // Set up layout to exist but no active pane
-      mockTerminalStore.getLayout.mockReturnValue({
-        id: 'layout-1',
-        sessionId: mockSessionId,
-        panes: [],
-      });
-      mockTerminalStore.getActivePane.mockReturnValue(null);
-
-      renderHook(() => useWorkspaceKeybindingCommands(mockSessionId));
-
-      const registerCalls = vi.mocked(keybindingManager.registerCommand).mock.calls;
-      const newTermCall = registerCalls.find((call) => call[0] === 'terminal.new');
-      const handler = newTermCall![1];
-
-      handler();
-
-      expect(toast.error).toHaveBeenCalledWith('No active terminal pane.');
-      expect(mockTerminalStore.addTab).not.toHaveBeenCalled();
     });
 
     it('should show toast for unimplemented terminal.clear command', () => {

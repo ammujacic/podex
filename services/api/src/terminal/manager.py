@@ -28,6 +28,7 @@ from urllib.parse import urlencode
 import redis.asyncio as aioredis
 import structlog
 import websockets
+from websockets import State
 from websockets.asyncio.client import ClientConnection
 
 from src.config import settings
@@ -298,15 +299,26 @@ class TerminalManager:
             if effective_session_id in self.sessions:
                 session = self.sessions[effective_session_id]
                 if session.running:
-                    # For cloud workspaces, check if websocket is active
+                    # For cloud workspaces, check if websocket is still connected
                     if not session.is_local_pod and session._websocket:
-                        session.on_output = on_output
+                        # Check if websocket is still open (not just exists)
+                        if session._websocket.state == State.OPEN:
+                            session.on_output = on_output
+                            logger.info(
+                                "Reusing existing terminal connection (cloud)",
+                                workspace_id=workspace_id,
+                                session_id=effective_session_id,
+                            )
+                            return session
+                        # Websocket was closed, clean up stale session
                         logger.info(
-                            "Reusing existing terminal connection (cloud)",
+                            "Cleaning up stale terminal session (websocket closed)",
                             workspace_id=workspace_id,
                             session_id=effective_session_id,
                         )
-                        return session
+                        await self._cleanup_session(session)
+                        del self.sessions[effective_session_id]
+                        # Fall through to create new session
                     # For local pods, always re-call terminal.create to ensure
                     # the output streaming loop is running on the pod
                     if session.is_local_pod:

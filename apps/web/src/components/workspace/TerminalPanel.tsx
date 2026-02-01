@@ -1,11 +1,10 @@
 'use client';
 
 import { useEffect, useCallback, useState, useRef } from 'react';
+import { Plus, X, Terminal as TerminalIcon, RefreshCw, Maximize2, Minimize2 } from 'lucide-react';
 import { useUIStore } from '@/stores/ui';
 import { useSessionStore } from '@/stores/session';
-import { getUserConfig } from '@/lib/api/user-config';
-import { useTerminalStore } from '@/stores/terminal';
-import { SplitTerminalLayout } from './SplitTerminalLayout';
+import { TerminalInstance } from './TerminalInstance';
 import { cn } from '@/lib/utils';
 
 const MIN_HEIGHT = 150;
@@ -18,9 +17,21 @@ export interface TerminalPanelProps {
 export function TerminalPanel({ sessionId }: TerminalPanelProps) {
   const { setTerminalVisible, terminalHeight, setTerminalHeight } = useUIStore();
   const session = useSessionStore((state) => state.sessions[sessionId]);
+  const { addTerminalWindow, removeTerminalWindow, setActiveWindow } = useSessionStore();
+
   const [isDragging, setIsDragging] = useState(false);
   const dragStartY = useRef(0);
   const dragStartHeight = useRef(0);
+  const terminalRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  // Get terminals and active terminal from session
+  const terminalWindows = session?.terminalWindows ?? [];
+  const activeWindowId = session?.activeWindowId;
+  const workspaceId = session?.workspaceId;
+
+  // Find active terminal - default to first if none selected or if selected is not a terminal
+  const activeTerminal = terminalWindows.find((t) => t.id === activeWindowId) ?? terminalWindows[0];
+  const activeTerminalId = activeTerminal?.id;
 
   // Handle resize drag
   const handleMouseDown = useCallback(
@@ -37,7 +48,6 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
     if (!isDragging) return;
 
     const handleMouseMove = (e: MouseEvent) => {
-      // Dragging up increases height, dragging down decreases
       const delta = dragStartY.current - e.clientY;
       const newHeight = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, dragStartHeight.current + delta));
       setTerminalHeight(newHeight);
@@ -56,32 +66,39 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
     };
   }, [isDragging, setTerminalHeight]);
 
-  // Get actual workspace_id from session, fallback to sessionId
-  const workspaceId = session?.workspaceId || sessionId;
+  // Add a new terminal
+  const handleAddTerminal = useCallback(() => {
+    addTerminalWindow(sessionId);
+  }, [sessionId, addTerminalWindow]);
 
-  const { initLayout, setDefaultShell, getLayout } = useTerminalStore();
+  // Close a terminal tab
+  const handleCloseTab = useCallback(
+    (terminalId: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      removeTerminalWindow(sessionId, terminalId);
+    },
+    [sessionId, removeTerminalWindow]
+  );
 
-  const layout = getLayout(sessionId);
+  // Switch to a terminal tab
+  const handleSelectTab = useCallback(
+    (terminalId: string) => {
+      setActiveWindow(sessionId, terminalId);
+    },
+    [sessionId, setActiveWindow]
+  );
 
-  // Load user's default shell preference and init layout
-  useEffect(() => {
-    async function loadConfig() {
-      try {
-        const config = await getUserConfig();
-        if (config?.default_shell) {
-          setDefaultShell(config.default_shell);
-          initLayout(sessionId, config.default_shell);
-        } else {
-          initLayout(sessionId);
-        }
-      } catch {
-        initLayout(sessionId);
-      }
-    }
-    loadConfig();
-  }, [sessionId, initLayout, setDefaultShell]);
+  // Reconnect terminal
+  const handleReconnect = useCallback(() => {
+    if (!activeTerminalId) return;
+    const container = terminalRefs.current[activeTerminalId] as HTMLDivElement & {
+      reconnect?: () => void;
+    };
+    container?.reconnect?.();
+  }, [activeTerminalId]);
 
-  if (!layout) {
+  // Wait for valid workspaceId before rendering
+  if (!workspaceId) {
     return (
       <div className="flex h-full items-center justify-center bg-surface">
         <div className="animate-spin h-6 w-6 border-2 border-accent-primary border-t-transparent rounded-full" />
@@ -89,9 +106,36 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
     );
   }
 
+  // If no terminals exist, show prompt to create one
+  if (terminalWindows.length === 0) {
+    return (
+      <div className="flex h-full flex-col bg-surface">
+        <div
+          onMouseDown={handleMouseDown}
+          className={cn(
+            'h-1 cursor-row-resize flex-shrink-0 transition-colors',
+            'bg-accent-primary/40',
+            'hover:bg-accent-primary/70',
+            isDragging && 'bg-accent-primary'
+          )}
+          title="Drag to resize terminal"
+        />
+        <div className="flex-1 flex items-center justify-center">
+          <button
+            onClick={handleAddTerminal}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-elevated hover:bg-overlay transition-colors text-text-secondary hover:text-text-primary"
+          >
+            <Plus className="h-4 w-4" />
+            <span>New Terminal</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col bg-surface">
-      {/* Draggable resize handle at top - visible purple border */}
+      {/* Draggable resize handle at top */}
       <div
         onMouseDown={handleMouseDown}
         className={cn(
@@ -103,32 +147,96 @@ export function TerminalPanel({ sessionId }: TerminalPanelProps) {
         title="Drag to resize terminal"
       />
 
-      {/* Terminal content - pane headers provide all controls */}
-      <div className="flex-1 relative" style={{ minHeight: 0 }}>
-        <SplitTerminalLayout
-          sessionId={sessionId}
-          workspaceId={workspaceId}
-          layout={layout}
-          terminalHeight={terminalHeight}
-          setTerminalHeight={setTerminalHeight}
-          setTerminalVisible={setTerminalVisible}
-        />
+      {/* Tab bar */}
+      <div className="flex items-center justify-between border-b border-border-subtle bg-elevated/50 flex-shrink-0">
+        {/* Tabs */}
+        <div className="flex items-center overflow-x-auto flex-1">
+          {terminalWindows.map((terminal) => (
+            <div
+              key={terminal.id}
+              onClick={() => handleSelectTab(terminal.id)}
+              className={cn(
+                'group flex items-center gap-1.5 px-3 py-2 text-xs cursor-pointer border-b-2 transition-colors min-w-0',
+                activeTerminalId === terminal.id
+                  ? 'border-accent-primary text-text-primary bg-overlay/50'
+                  : 'border-transparent text-text-muted hover:text-text-secondary hover:bg-overlay/30'
+              )}
+            >
+              <TerminalIcon className="h-3 w-3 flex-shrink-0 text-cyan-400" />
+              <span className="truncate max-w-[100px]">{terminal.name}</span>
+              <span className="text-[10px] text-text-muted">({terminal.shell})</span>
+              {terminalWindows.length > 1 && (
+                <button
+                  onClick={(e) => handleCloseTab(terminal.id, e)}
+                  className="ml-1 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-overlay hover:text-text-primary transition-opacity"
+                >
+                  <X className="h-2.5 w-2.5" />
+                </button>
+              )}
+            </div>
+          ))}
+
+          {/* Add tab button */}
+          <button
+            onClick={handleAddTerminal}
+            className="flex items-center px-2 py-2 text-text-muted hover:text-text-secondary hover:bg-overlay/30 transition-colors"
+            title="New Terminal"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {/* Controls */}
+        <div className="flex items-center gap-1 px-2">
+          <button
+            onClick={handleReconnect}
+            className="rounded p-1 text-text-muted hover:bg-overlay hover:text-text-secondary"
+            title="Reconnect"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={() => setTerminalHeight(terminalHeight === 300 ? 500 : 300)}
+            className="rounded p-1 text-text-muted hover:bg-overlay hover:text-text-secondary"
+            title={terminalHeight === 300 ? 'Maximize' : 'Minimize'}
+          >
+            {terminalHeight === 300 ? (
+              <Maximize2 className="h-3.5 w-3.5" />
+            ) : (
+              <Minimize2 className="h-3.5 w-3.5" />
+            )}
+          </button>
+          <button
+            onClick={() => setTerminalVisible(false)}
+            className="rounded p-1 text-text-muted hover:bg-overlay hover:text-accent-error"
+            title="Close Terminal Panel"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
 
-      {/* Keyboard shortcuts hint */}
-      <div className="flex items-center justify-center gap-4 px-2 py-1 border-t border-border-subtle text-[10px] text-text-muted">
-        <span>
-          <kbd className="px-1 py-0.5 bg-overlay rounded text-[9px]">Cmd+Shift+D</kbd> Split H
-        </span>
-        <span>
-          <kbd className="px-1 py-0.5 bg-overlay rounded text-[9px]">Cmd+Shift+E</kbd> Split V
-        </span>
-        <span>
-          <kbd className="px-1 py-0.5 bg-overlay rounded text-[9px]">Cmd+]</kbd> Next Pane
-        </span>
-        <span>
-          <kbd className="px-1 py-0.5 bg-overlay rounded text-[9px]">Cmd+[</kbd> Prev Pane
-        </span>
+      {/* Terminal instances */}
+      <div className="flex-1 relative" style={{ minHeight: 0 }}>
+        {terminalWindows.map((terminal) => (
+          <div
+            key={terminal.id}
+            ref={(el) => {
+              terminalRefs.current[terminal.id] = el;
+            }}
+            className={cn(
+              'absolute inset-0',
+              activeTerminalId === terminal.id ? 'block' : 'hidden'
+            )}
+          >
+            <TerminalInstance
+              workspaceId={workspaceId}
+              tabId={terminal.id}
+              shell={terminal.shell}
+              isActive={activeTerminalId === terminal.id}
+            />
+          </div>
+        ))}
       </div>
     </div>
   );

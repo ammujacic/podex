@@ -3,7 +3,7 @@
 import { Bot, Terminal } from 'lucide-react';
 import { useSessionStore } from '@/stores/session';
 import { cn } from '@/lib/utils';
-import { getRoleIcon } from '@/lib/agentConstants';
+import { getRoleIcon, getAgentTextColor } from '@/lib/agentConstants';
 
 interface AgentsPanelProps {
   sessionId: string;
@@ -48,7 +48,7 @@ export function AgentsPanel({ sessionId }: AgentsPanelProps) {
                 <RoleIcon
                   className={cn(
                     'h-4 w-4 shrink-0',
-                    isActive ? 'text-text-inverse' : 'text-text-muted'
+                    isActive ? 'text-text-inverse' : getAgentTextColor(agent.color)
                   )}
                 />
                 <div className="flex-1 min-w-0">

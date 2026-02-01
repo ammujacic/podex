@@ -76,6 +76,11 @@ export function TerminalInstance({
     const { Terminal } = await import('@xterm/xterm');
     const { FitAddon } = await import('@xterm/addon-fit');
     const { WebLinksAddon } = await import('@xterm/addon-web-links');
+    const { WebglAddon } = await import('@xterm/addon-webgl');
+    const { CanvasAddon } = await import('@xterm/addon-canvas');
+    const { Unicode11Addon } = await import('@xterm/addon-unicode11');
+    const { LigaturesAddon } = await import('@xterm/addon-ligatures');
+    const { SearchAddon } = await import('@xterm/addon-search');
 
     // Import xterm CSS
     await import('@xterm/xterm/css/xterm.css');
@@ -93,10 +98,51 @@ export function TerminalInstance({
 
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon();
+    const unicode11Addon = new Unicode11Addon();
+    const searchAddon = new SearchAddon();
 
+    // Load core addons
     term.loadAddon(fitAddon);
     term.loadAddon(webLinksAddon);
+    term.loadAddon(unicode11Addon);
+    term.loadAddon(searchAddon);
+
+    // Activate Unicode 11 for better emoji/symbol support
+    term.unicode.activeVersion = '11';
+
     term.open(container);
+
+    // Try to load WebGL addon for GPU-accelerated rendering
+    let rendererLoaded = false;
+    try {
+      const webglAddon = new WebglAddon();
+      webglAddon.onContextLoss(() => {
+        webglAddon.dispose();
+      });
+      term.loadAddon(webglAddon);
+      rendererLoaded = true;
+    } catch {
+      // WebGL not supported, try canvas renderer
+    }
+
+    // Fallback to canvas renderer if WebGL failed
+    if (!rendererLoaded) {
+      try {
+        const canvasAddon = new CanvasAddon();
+        term.loadAddon(canvasAddon);
+      } catch {
+        // Use default DOM renderer
+      }
+    }
+
+    // Try to load ligatures addon (requires font with ligature support)
+    try {
+      const ligaturesAddon = new LigaturesAddon();
+      term.loadAddon(ligaturesAddon);
+    } catch {
+      // Ligatures not supported
+    }
+
     fitAddon.fit();
 
     termRef.current = term;
