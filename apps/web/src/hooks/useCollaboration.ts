@@ -95,6 +95,9 @@ export function useCollaborativeFile(
   const [collaborators, setCollaborators] = useState<CollaboratorInfo[]>([]);
   const yTextRef = useRef<Y.Text | null>(null);
   const colorRef = useRef(generateUserColor());
+  // Store initialContent in a ref so effect doesn't re-run when parent passes new reference
+  const initialContentRef = useRef(initialContent);
+  initialContentRef.current = initialContent;
 
   useEffect(() => {
     if (!sessionId || !filePath) return;
@@ -104,9 +107,10 @@ export function useCollaborativeFile(
     const yText = getFileContent(sessionId, filePath);
     yTextRef.current = yText;
 
-    // Initialize content if provided and document is empty
-    if (initialContent && yText.length === 0) {
-      initFileContent(sessionId, filePath, initialContent);
+    // Initialize content if provided and document is empty (use ref to avoid re-running effect)
+    const contentToInit = initialContentRef.current;
+    if (contentToInit && yText.length === 0) {
+      initFileContent(sessionId, filePath, contentToInit);
     }
 
     // Set initial content from Yjs
@@ -146,7 +150,7 @@ export function useCollaborativeFile(
       clearInterval(interval);
       destroyYDoc(sessionId, docName);
     };
-  }, [sessionId, filePath, initialContent, user]);
+  }, [sessionId, filePath, user]);
 
   // Update content handler
   const updateContent = useCallback(

@@ -6,6 +6,7 @@ from typing import Annotated, Any
 import stripe
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -276,7 +277,7 @@ async def get_org_subscription(
     subscription = sub_result.scalar_one_or_none()
 
     if not subscription:
-        return None
+        return JSONResponse(status_code=200, content=None)
 
     # Get plan details
     plan_result = await db.execute(
@@ -285,7 +286,7 @@ async def get_org_subscription(
     plan = plan_result.scalar_one_or_none()
 
     if not plan:
-        return None
+        return JSONResponse(status_code=200, content=None)
 
     return OrgSubscriptionResponse(
         id=str(subscription.id),
@@ -482,10 +483,8 @@ async def create_org_credits_checkout(
         session_id=session.id,
     )
 
-    return CheckoutResponse(
-        url=session.url or "",
-        session_id=session.id,
-    )
+    body = CheckoutResponse(url=session.url or "", session_id=session.id)
+    return JSONResponse(status_code=200, content=body.model_dump(mode="json"))
 
 
 @router.post("/{org_id}/billing/portal", response_model=PortalResponse)
@@ -549,8 +548,9 @@ async def list_org_payment_methods(
     org, _ = await get_org_and_verify_owner(db, org_id, str(user.id))
 
     if not org.stripe_customer_id:
-        # Organization has no Stripe customer yet, return empty list
-        return OrgPaymentMethodsListResponse(payment_methods=[], default_payment_method_id=None)
+        # Org has no Stripe customer yet; return empty list (explicit Response for middleware)
+        body = OrgPaymentMethodsListResponse(payment_methods=[], default_payment_method_id=None)
+        return JSONResponse(status_code=200, content=body.model_dump(mode="json"))
 
     try:
         # Get customer to find default payment method

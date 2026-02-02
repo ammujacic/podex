@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
-import { usePresenceStore, type UserPresence } from '../presence';
+import {
+  usePresenceStore,
+  getRandomColor,
+  getSharingModeLabel,
+  type UserPresence,
+} from '../presence';
 
 // Mock user fixtures
 const mockUser1: UserPresence = {
@@ -534,6 +539,65 @@ describe('presenceStore', () => {
       expect(user1?.isTyping).toBe(true);
       expect(user2?.isTyping).toBe(true);
       expect(user3?.isTyping).toBe(false);
+    });
+  });
+
+  // ========================================================================
+  // Helper functions
+  // ========================================================================
+
+  describe('getRandomColor', () => {
+    it('returns a color from the palette for a given seed', () => {
+      const color = getRandomColor('user-1');
+      expect(color).toMatch(/^#[0-9a-f]{6}$/i);
+      const palette = [
+        '#3b82f6',
+        '#10b981',
+        '#f59e0b',
+        '#8b5cf6',
+        '#ec4899',
+        '#06b6d4',
+        '#f97316',
+        '#84cc16',
+      ];
+      expect(palette).toContain(color);
+    });
+
+    it('returns same color for same seed', () => {
+      expect(getRandomColor('alice')).toBe(getRandomColor('alice'));
+    });
+
+    it('returns different colors for different seeds', () => {
+      const a = getRandomColor('seed-a');
+      const b = getRandomColor('seed-b');
+      expect(a).toBeDefined();
+      expect(b).toBeDefined();
+      // Not guaranteed different for all seeds but typically are
+      expect(typeof a).toBe('string');
+      expect(typeof b).toBe('string');
+    });
+
+    it('handles empty string seed', () => {
+      const color = getRandomColor('');
+      expect(color).toMatch(/^#[0-9a-f]{6}$/i);
+    });
+  });
+
+  describe('getSharingModeLabel', () => {
+    it('returns "View only" for view_only', () => {
+      expect(getSharingModeLabel('view_only')).toBe('View only');
+    });
+
+    it('returns "Can edit" for can_edit', () => {
+      expect(getSharingModeLabel('can_edit')).toBe('Can edit');
+    });
+
+    it('returns "Full control" for full_control', () => {
+      expect(getSharingModeLabel('full_control')).toBe('Full control');
+    });
+
+    it('returns mode as-is for unknown mode', () => {
+      expect(getSharingModeLabel('custom')).toBe('custom');
     });
   });
 });

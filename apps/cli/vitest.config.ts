@@ -32,6 +32,14 @@ export default defineConfig({
     },
     testTimeout: 10000,
     hookTimeout: 10000,
+    // Work around a Vitest v8 coverage bug with concurrent workers by
+    // forcing coverage to run in a single worker.
+    poolOptions: {
+      threads: {
+        maxThreads: 1,
+        minThreads: 1,
+      },
+    },
   },
   resolve: {
     alias: {

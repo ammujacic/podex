@@ -128,7 +128,7 @@ When writing tests:
 - Mock external dependencies appropriately
 - Include both happy path and error cases
 
-Target 90%+ code coverage. Focus on testing behavior, not implementation details."""
+Target 80%+ code coverage. Focus on testing behavior, not implementation details."""
 
 SECURITY_SYSTEM_PROMPT = """You are a security expert agent. Your role is to:
 

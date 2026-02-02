@@ -146,15 +146,21 @@ describe('useModelLoading', () => {
   // ========================================================================
 
   describe('Initialization', () => {
-    it('should initialize with empty backend models', () => {
+    it('should initialize with empty backend models', async () => {
       const { result } = renderHook(() => useModelLoading());
 
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false);
+      });
       expect(result.current.backendModels).toEqual([]);
     });
 
-    it('should initialize with empty user provider models', () => {
+    it('should initialize with empty user provider models', async () => {
       const { result } = renderHook(() => useModelLoading());
 
+      await waitFor(() => {
+        expect(result.current.isLoading).toBe(false);
+      });
       expect(result.current.userProviderModels).toEqual([]);
     });
 

@@ -71,6 +71,7 @@ from src.routes import (
     mfa,
     notifications,
     oauth,
+    org_billing,
     organizations,
     pending_changes,
     plans,
@@ -1625,7 +1626,7 @@ async def seed_admin() -> None:
     if is_dev and not settings.DEV_SEED_ADMIN:
         return
 
-    from passlib.context import CryptContext
+    import bcrypt
     from sqlalchemy import select
 
     from src.database.models import (
@@ -1633,8 +1634,6 @@ async def seed_admin() -> None:
         User,
         UserSubscription,
     )
-
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
     # Admin credentials - SECURITY: No hardcoded defaults, require explicit env vars
     admin_email = os.environ.get("ADMIN_EMAIL")
@@ -1726,10 +1725,15 @@ async def seed_admin() -> None:
                             await _create_dev_subscription(db, existing_user.id, plan)
                     continue
 
-                # Create user
+                # Create user with bcrypt-hashed password (compatible with runtime auth)
+                password_hash = bcrypt.hashpw(
+                    user_data["password"].encode("utf-8"),
+                    bcrypt.gensalt(rounds=12),
+                ).decode("utf-8")
+
                 user = User(
                     email=user_data["email"],
-                    password_hash=pwd_context.hash(user_data["password"]),
+                    password_hash=password_hash,
                     name=user_data["name"],
                     role=user_data["role"],
                     is_active=True,
@@ -2197,6 +2201,9 @@ api_v1.include_router(project_health.router, tags=["project-health"])
 api_v1.include_router(health_checks.router, tags=["health-checks"])
 api_v1.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 api_v1.include_router(organizations.router, prefix="/organizations", tags=["organizations"])
+api_v1.include_router(
+    org_billing.router, tags=["organization-billing"]
+)  # Has own /organizations prefix
 api_v1.include_router(push.router, prefix="/push", tags=["push"])
 api_v1.include_router(context.router, prefix="/context", tags=["context"])
 api_v1.include_router(checkpoints.router, prefix="/checkpoints", tags=["checkpoints"])

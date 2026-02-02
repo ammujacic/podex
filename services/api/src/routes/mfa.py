@@ -4,7 +4,6 @@ from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from passlib.hash import bcrypt
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +13,7 @@ from src.database import get_db
 from src.database.models import User
 from src.middleware.auth import get_current_user_id
 from src.middleware.rate_limit import RATE_LIMIT_SENSITIVE, limiter
+from src.routes.auth import verify_password
 from src.services.mfa import get_mfa_service
 
 logger = structlog.get_logger()
@@ -202,7 +202,7 @@ async def disable_mfa(
 
     # Verify password (only for non-OAuth users)
     if user.password_hash:
-        if not bcrypt.verify(body.password, user.password_hash):
+        if not verify_password(body.password, user.password_hash):
             raise HTTPException(status_code=401, detail="Invalid password")
     elif user.oauth_provider:
         # OAuth users can disable without password, but still need MFA code

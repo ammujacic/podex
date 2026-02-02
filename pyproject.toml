@@ -76,7 +76,6 @@ module = [
     "aiohttp",
     "aiohttp.*",
     "socketio.*",
-    "passlib.*",
     "jose.*",
     "jwt.*",
     "docker.*",

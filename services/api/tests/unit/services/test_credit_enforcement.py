@@ -276,7 +276,7 @@ async def test_check_credits_compute_resource_type():
         overage_allowed=False,
     )
 
-    # Mock quota for compute_hours
+    # Mock quota for compute_credits (limit/usage in cents)
     mock_quota = MagicMock(
         limit_value=10000,
         current_usage=5000,

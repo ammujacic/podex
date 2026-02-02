@@ -116,12 +116,15 @@ export default function SettingsPage() {
       return;
     }
 
+    let isCancelled = false;
+
     async function loadData() {
       try {
         const [configData, templatesData] = await Promise.all([
           getUserConfig(),
           listTemplates(true),
         ]);
+        if (isCancelled) return;
         setConfig(configData);
         setTemplates(templatesData);
         setFormData({
@@ -132,31 +135,39 @@ export default function SettingsPage() {
           default_template_id: configData.default_template_id,
         });
       } catch {
-        setError('Failed to load settings');
+        if (!isCancelled) setError('Failed to load settings');
       } finally {
-        setLoading(false);
+        if (!isCancelled) setLoading(false);
       }
     }
 
     loadData();
+    return () => {
+      isCancelled = true;
+    };
   }, [user, router, isInitialized]);
 
   useEffect(() => {
     if (!isInitialized || !user) return;
 
+    let isCancelled = false;
+
     const fetchGitHubStatus = async () => {
       setGithubLoading(true);
       try {
         const data = await getGitHubStatus();
-        setGithubStatus(data);
+        if (!isCancelled) setGithubStatus(data);
       } catch {
-        setGithubStatus({ connected: false, username: null, avatar_url: null });
+        if (!isCancelled) setGithubStatus({ connected: false, username: null, avatar_url: null });
       } finally {
-        setGithubLoading(false);
+        if (!isCancelled) setGithubLoading(false);
       }
     };
 
     fetchGitHubStatus();
+    return () => {
+      isCancelled = true;
+    };
   }, [isInitialized, user]);
 
   const handleSave = async () => {

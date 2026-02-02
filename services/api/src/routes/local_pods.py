@@ -9,7 +9,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
@@ -226,9 +226,10 @@ async def register_pod(
     Returns the pod token which is only shown once. Store it securely!
     """
     # Check pod limit per user
-    count_query = select(LocalPod).where(LocalPod.user_id == current_user["id"])
-    result = await db.execute(count_query)
-    existing_count = len(list(result.scalars().all()))
+    count_result = await db.execute(
+        select(func.count()).select_from(LocalPod).where(LocalPod.user_id == current_user["id"])
+    )
+    existing_count = count_result.scalar() or 0
 
     if existing_count >= MAX_PODS_PER_USER:
         raise HTTPException(

@@ -28,12 +28,16 @@ STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # Paths that should be exempt from CSRF validation (e.g., auth endpoints for CLI)
 # These endpoints are either:
 # - Initial auth endpoints where no credentials exist yet (device auth flow)
-# - Public endpoints with no harmful side effects
+# - Public endpoints with no harmful side effects (login, register, password check)
 CSRF_EXEMPT_PATHS = {
     "/api/v1/auth/device/code",  # Device auth initiation (no creds yet)
     "/api/v1/auth/device/token",  # Device auth token polling (uses device_code secret)
     "/api/auth/device/code",  # Device auth initiation (no creds yet)
     "/api/auth/device/token",  # Device auth token polling (uses device_code secret)
+    "/api/auth/login",  # No creds yet
+    "/api/auth/register",  # No creds yet
+    "/api/auth/register/",  # Alternate path form
+    "/api/auth/password/check",  # Public strength check
 }
 
 

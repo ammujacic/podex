@@ -942,23 +942,6 @@ export async function handleGoogleCallbackAuto(
 
   return response;
 }
-
-// Google connection status and management
-export interface GoogleConnectionStatus {
-  connected: boolean;
-  email: string | null;
-  name: string | null;
-  avatar_url: string | null;
-}
-
-export async function getGoogleStatus(): Promise<GoogleConnectionStatus> {
-  return api.get<GoogleConnectionStatus>('/api/google/status');
-}
-
-export async function disconnectGoogle(): Promise<void> {
-  await api.delete('/api/google/disconnect');
-}
-
 // Marketplace methods
 
 // Skills methods

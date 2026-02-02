@@ -218,6 +218,63 @@ describe('push-notifications utilities', () => {
       expect(result).toBeNull();
       consoleSpy.mockRestore();
     });
+
+    it('returns null when VAPID key is not configured', async () => {
+      vi.stubGlobal('navigator', {
+        serviceWorker: { ready: Promise.resolve({ pushManager: mockPushManager }) },
+      });
+      vi.stubGlobal('PushManager', class {});
+      vi.stubGlobal('Notification', {
+        permission: 'granted',
+        requestPermission: vi.fn().mockResolvedValue('granted'),
+      });
+      vi.stubEnv('NEXT_PUBLIC_VAPID_PUBLIC_KEY', '');
+      vi.resetModules();
+
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { subscribeToPushNotifications } = await import('../push-notifications');
+      const result = await subscribeToPushNotifications();
+
+      expect(result).toBeNull();
+      expect(consoleSpy).toHaveBeenCalledWith('VAPID public key not configured');
+      consoleSpy.mockRestore();
+    });
+
+    it('subscribes successfully and sends to backend when permission granted', async () => {
+      vi.stubGlobal('navigator', {
+        serviceWorker: {
+          ready: Promise.resolve({
+            pushManager: {
+              getSubscription: vi.fn().mockResolvedValue(null),
+              subscribe: vi.fn().mockResolvedValue(mockSubscription),
+            },
+          }),
+        },
+      });
+      vi.stubGlobal('PushManager', class {});
+      vi.stubGlobal('Notification', {
+        permission: 'default',
+        requestPermission: vi.fn().mockResolvedValue('granted'),
+      });
+      vi.stubEnv('NEXT_PUBLIC_VAPID_PUBLIC_KEY', 'dGVzdC12YXBpZC1rZXk=');
+      vi.resetModules();
+      mockApiPost.mockResolvedValue({});
+
+      const { subscribeToPushNotifications } = await import('../push-notifications');
+      const result = await subscribeToPushNotifications();
+
+      expect(result).toBe(mockSubscription);
+      expect(mockApiPost).toHaveBeenCalledWith(
+        '/api/v1/push/subscribe',
+        expect.objectContaining({
+          subscription: expect.objectContaining({
+            endpoint: mockSubscription.endpoint,
+            keys: expect.any(Object),
+          }),
+        })
+      );
+      expect(mockSetPushSubscription).toHaveBeenCalledWith(mockSubscription);
+    });
   });
 
   describe('unsubscribeFromPushNotifications', () => {

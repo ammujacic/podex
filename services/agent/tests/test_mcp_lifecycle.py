@@ -695,3 +695,210 @@ class TestMCPLifecycleManagerMethods:
         """Test attempted servers are tracked."""
         manager._attempted_servers = ["server1"]
         assert "server1" in manager._attempted_servers
+
+    @pytest.mark.asyncio
+    async def test_ensure_connected_connects_once(self, monkeypatch: pytest.MonkeyPatch, manager):
+        """ensure_connected only connects once and reuses registry."""
+        from src.mcp.lifecycle import MCPLifecycleManager
+        from src.mcp.integration import UserMCPConfig, UserMCPServerConfig
+
+        # Replace registry with a mock to avoid real connections
+        mock_registry = MagicMock()
+        mock_registry.add_server = AsyncMock(return_value=True)
+        manager._registry = mock_registry
+
+        server_cfg = UserMCPServerConfig(
+            id="s1",
+            name="server-1",
+            transport="stdio",
+            command="node",
+        )
+        user_cfg = UserMCPConfig(user_id="u1", servers=[server_cfg])
+
+        await manager.ensure_connected(user_cfg)
+        assert manager.is_connected is True
+        # Second call should be a no-op
+        await manager.ensure_connected(user_cfg)
+        mock_registry.add_server.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_connect_servers_sets_auth_token_for_internal_agent(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """_connect_servers sets auth_token when URL matches AGENT_INTERNAL_URL."""
+        from src import config as config_module
+        from src.mcp.lifecycle import MCPLifecycleManager
+        from src.mcp.integration import UserMCPServerConfig
+
+        manager = MCPLifecycleManager(session_id="s1")
+
+        # Configure settings to look like a deployed internal URL
+        config_module.settings.AGENT_INTERNAL_URL = "http://agent:3002"
+        config_module.settings.INTERNAL_SERVICE_TOKEN = "secret-token"
+
+        # Capture configs passed to registry
+        captured: list[Any] = []
+
+        async def fake_add_server(mcp_config: Any) -> bool:
+            captured.append(mcp_config)
+            return True
+
+        manager._registry = MagicMock()
+        manager._registry.add_server = AsyncMock(side_effect=fake_add_server)
+
+        servers = [
+            UserMCPServerConfig(
+                id="internal",
+                name="internal-server",
+                transport="http",
+                url="http://agent:3002/mcp",
+            ),
+            UserMCPServerConfig(
+                id="external",
+                name="external-server",
+                transport="http",
+                url="https://example.com/mcp",
+            ),
+        ]
+
+        await manager._connect_servers(servers)
+
+        assert len(captured) == 2
+        internal_cfg = next(c for c in captured if c.id == "internal")
+        external_cfg = next(c for c in captured if c.id == "external")
+        assert internal_cfg.auth_token == "secret-token"
+        assert external_cfg.auth_token is None
+
+    @pytest.mark.asyncio
+    async def test_connect_with_retry_limits_retries_on_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        manager,
+    ):
+        """_connect_with_retry stops after configured retries."""
+        from src.mcp.client import MCPServerConfig, MCPTransport
+        from src import config as config_module
+
+        config_module.settings.MCP_MAX_RETRIES = 3
+        config_module.settings.MCP_RETRY_DELAY = 0.01
+
+        # Always fail
+        manager._registry = MagicMock()
+        manager._registry.add_server = AsyncMock(side_effect=RuntimeError("fail"))
+
+        async def fake_sleep(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr("asyncio.sleep", fake_sleep)
+
+        cfg = MCPServerConfig(
+            id="s1",
+            name="server-1",
+            transport=MCPTransport.STDIO,
+            command="node",
+        )
+
+        result = await manager._connect_with_retry(cfg)
+        assert result is False
+        # Should have attempted MCP_MAX_RETRIES times
+        assert manager._registry.add_server.await_count == config_module.settings.MCP_MAX_RETRIES
+
+    @pytest.mark.asyncio
+    async def test_disconnect_all_removes_servers_and_resets_state(self, manager):
+        """disconnect_all removes all servers and marks manager as disconnected."""
+        # Pretend two servers are connected
+        manager._registry = MagicMock()
+        manager._registry.connected_servers = {"s1", "s2"}
+        manager._registry.remove_server = AsyncMock()
+        manager._connected = True
+
+        await manager.disconnect_all()
+
+        # Called for each server id
+        calls = {c.args[0] for c in manager._registry.remove_server.await_args_list}
+        assert calls == {"s1", "s2"}
+        assert manager._connected is False
+
+
+class TestLifecycleStoreAndHelpers:
+    """Tests for MCPLifecycleStore and helper functions."""
+
+    @pytest.mark.asyncio
+    async def test_get_or_create_returns_same_manager_for_session(self):
+        from src.mcp.lifecycle import MCPLifecycleStore
+
+        store = MCPLifecycleStore()
+        m1 = await store.get_or_create("s1")
+        m2 = await store.get_or_create("s1")
+        assert m1 is m2
+
+    @pytest.mark.asyncio
+    async def test_remove_cleans_up_manager(self, monkeypatch: pytest.MonkeyPatch):
+        from src.mcp.lifecycle import MCPLifecycleStore
+
+        store = MCPLifecycleStore()
+        manager = MagicMock()
+        manager.disconnect_all = AsyncMock()
+
+        # Inject fake manager
+        store._managers["s1"] = manager
+
+        await store.remove("s1")
+
+        manager.disconnect_all.assert_awaited_once()
+        assert "s1" not in store._managers
+
+    @pytest.mark.asyncio
+    async def test_cleanup_all_clears_all_managers(self):
+        from src.mcp.lifecycle import MCPLifecycleStore
+
+        store = MCPLifecycleStore()
+        m1 = MagicMock()
+        m1.disconnect_all = AsyncMock()
+        m2 = MagicMock()
+        m2.disconnect_all = AsyncMock()
+        store._managers = {"s1": m1, "s2": m2}
+
+        await store.cleanup_all()
+
+        m1.disconnect_all.assert_awaited_once()
+        m2.disconnect_all.assert_awaited_once()
+        assert store._managers == {}
+
+    def test_singleton_store_reuses_instance(self):
+        from src.mcp.lifecycle import get_lifecycle_store
+
+        s1 = get_lifecycle_store()
+        s2 = get_lifecycle_store()
+        assert s1 is s2
+
+    @pytest.mark.asyncio
+    async def test_get_lifecycle_manager_helper_uses_store(self, monkeypatch: pytest.MonkeyPatch):
+        from src.mcp.lifecycle import get_lifecycle_manager, MCPLifecycleStore
+
+        store = MCPLifecycleStore()
+        manager = MagicMock()
+        store.get_or_create = AsyncMock(return_value=manager)
+
+        # Force singleton to use our store instance
+        from src.mcp import lifecycle as lifecycle_module
+
+        lifecycle_module._LifecycleStoreSingleton._instance = store
+
+        result = await get_lifecycle_manager("s1")
+        assert result is manager
+
+    @pytest.mark.asyncio
+    async def test_cleanup_session_mcp_uses_store(self, monkeypatch: pytest.MonkeyPatch):
+        from src.mcp.lifecycle import cleanup_session_mcp, MCPLifecycleStore
+
+        store = MCPLifecycleStore()
+        store.remove = AsyncMock()
+
+        from src.mcp import lifecycle as lifecycle_module
+
+        lifecycle_module._LifecycleStoreSingleton._instance = store
+
+        await cleanup_session_mcp("s1")
+        store.remove.assert_awaited_once_with("s1")

@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
-import { useMobileUIStore } from '../mobileUI';
+import {
+  useMobileUIStore,
+  useMobileMenu,
+  useMobileWidget,
+  useMobileFileViewer,
+  useMobileFileActions,
+} from '../mobileUI';
 
 describe('mobileUIStore', () => {
   beforeEach(() => {
@@ -451,6 +457,110 @@ describe('mobileUIStore', () => {
       expect(result.current.isMobileMenuOpen).toBe(false);
       expect(result.current.mobileActiveWidget).toBeNull();
       expect(result.current.mobileOpenFile).toBeNull();
+    });
+  });
+
+  // ========================================================================
+  // Convenience Hooks
+  // ========================================================================
+
+  describe('useMobileMenu', () => {
+    it('returns isOpen, setOpen, and toggle', () => {
+      const { result } = renderHook(() => useMobileMenu());
+      expect(result.current).toHaveProperty('isOpen', false);
+      expect(result.current).toHaveProperty('setOpen');
+      expect(result.current).toHaveProperty('toggle');
+      expect(typeof result.current.setOpen).toBe('function');
+      expect(typeof result.current.toggle).toBe('function');
+    });
+
+    it('reflects store state and updates it', () => {
+      const { result } = renderHook(() => useMobileMenu());
+      act(() => {
+        result.current.setOpen(true);
+      });
+      expect(result.current.isOpen).toBe(true);
+      act(() => {
+        result.current.toggle();
+      });
+      expect(result.current.isOpen).toBe(false);
+    });
+  });
+
+  describe('useMobileWidget', () => {
+    it('returns activeWidget, open, and close', () => {
+      const { result } = renderHook(() => useMobileWidget());
+      expect(result.current).toHaveProperty('activeWidget', null);
+      expect(result.current).toHaveProperty('open');
+      expect(result.current).toHaveProperty('close');
+      expect(typeof result.current.open).toBe('function');
+      expect(typeof result.current.close).toBe('function');
+    });
+
+    it('reflects store state and updates it', () => {
+      const { result } = renderHook(() => useMobileWidget());
+      act(() => {
+        result.current.open('terminal');
+      });
+      expect(result.current.activeWidget).toBe('terminal');
+      act(() => {
+        result.current.close();
+      });
+      expect(result.current.activeWidget).toBeNull();
+    });
+  });
+
+  describe('useMobileFileViewer', () => {
+    it('returns file, open, and close', () => {
+      const { result } = renderHook(() => useMobileFileViewer());
+      expect(result.current).toHaveProperty('file', null);
+      expect(result.current).toHaveProperty('open');
+      expect(result.current).toHaveProperty('close');
+      expect(typeof result.current.open).toBe('function');
+      expect(typeof result.current.close).toBe('function');
+    });
+
+    it('reflects store state and updates it', () => {
+      const { result } = renderHook(() => useMobileFileViewer());
+      act(() => {
+        result.current.open('/src/App.tsx', 'content', 'typescript');
+      });
+      expect(result.current.file).toEqual({
+        path: '/src/App.tsx',
+        content: 'content',
+        language: 'typescript',
+      });
+      act(() => {
+        result.current.close();
+      });
+      expect(result.current.file).toBeNull();
+    });
+  });
+
+  describe('useMobileFileActions', () => {
+    it('returns target, open, and close', () => {
+      const { result } = renderHook(() => useMobileFileActions());
+      expect(result.current).toHaveProperty('target', null);
+      expect(result.current).toHaveProperty('open');
+      expect(result.current).toHaveProperty('close');
+      expect(typeof result.current.open).toBe('function');
+      expect(typeof result.current.close).toBe('function');
+    });
+
+    it('reflects store state and updates it', () => {
+      const { result } = renderHook(() => useMobileFileActions());
+      act(() => {
+        result.current.open('/src/App.tsx', 'App.tsx', 'file');
+      });
+      expect(result.current.target).toEqual({
+        path: '/src/App.tsx',
+        name: 'App.tsx',
+        type: 'file',
+      });
+      act(() => {
+        result.current.close();
+      });
+      expect(result.current.target).toBeNull();
     });
   });
 });

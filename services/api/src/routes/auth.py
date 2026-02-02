@@ -4,11 +4,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal, cast
 from uuid import uuid4
 
+import bcrypt
 import structlog
 from dateutil.relativedelta import relativedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from jose import JWTError, jwt
-from passlib.hash import bcrypt
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import and_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -323,15 +323,28 @@ def create_refresh_token(user_id: str, expires_in_seconds: int | None = None) ->
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against its hash."""
-    result: bool = bcrypt.verify(plain_password, hashed_password)
-    return result
+    """Verify a password against its hash.
+
+    Uses bcrypt directly. Existing bcrypt hashes generated via passlib remain
+    compatible because they use the standard bcrypt format understood by
+    pyca/bcrypt.
+    """
+    return bcrypt.checkpw(
+        plain_password.encode("utf-8"),
+        hashed_password.encode("utf-8"),
+    )
 
 
 def hash_password(password: str) -> str:
-    """Hash a password."""
-    hashed: str = bcrypt.hash(password)
-    return hashed
+    """Hash a password using bcrypt.
+
+    Returns:
+        A bcrypt hash string suitable for storage in the database.
+    """
+    # Use 12 rounds to match common bcrypt defaults (including passlib's).
+    salt = bcrypt.gensalt(rounds=12)
+    hashed = bcrypt.hashpw(password.encode("utf-8"), salt)
+    return hashed.decode("utf-8")
 
 
 @router.post("/login", response_model=AuthResponse | MFARequiredResponse)

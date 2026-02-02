@@ -13,11 +13,11 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+import bcrypt
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from jose import jwt as jose_jwt
-from passlib.context import CryptContext
 from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
@@ -58,8 +58,12 @@ from src.database.seeds import (
 )
 from src.main import app
 
-# Password hasher
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def _hash_password(password: str) -> str:
+    """Hash a password for tests using bcrypt."""
+    salt = bcrypt.gensalt(rounds=12)
+    hashed = bcrypt.hashpw(password.encode("utf-8"), salt)
+    return hashed.decode("utf-8")
 
 
 # Module-level engine - created once per test session
@@ -217,7 +221,13 @@ async def integration_db(integration_engine: AsyncEngine) -> AsyncGenerator[Asyn
     session = async_session_maker()
 
     # Track created objects for cleanup
-    session._test_created_ids = {"users": [], "sessions": [], "agents": [], "workspaces": []}
+    session._test_created_ids = {
+        "users": [],
+        "sessions": [],
+        "agents": [],
+        "workspaces": [],
+        "servers": [],
+    }
 
     try:
         yield session
@@ -225,6 +235,7 @@ async def integration_db(integration_engine: AsyncEngine) -> AsyncGenerator[Asyn
         # Clean up test data
         try:
             from src.database import Agent, Session, User, Workspace
+            from src.database.models.server import WorkspaceServer
 
             # Expire all objects first to detach from session
             session.expire_all()
@@ -235,6 +246,10 @@ async def integration_db(integration_engine: AsyncEngine) -> AsyncGenerator[Asyn
             for workspace_id in session._test_created_ids.get("workspaces", []):
                 await session.execute(
                     Workspace.__table__.delete().where(Workspace.id == workspace_id)
+                )
+            for server_id in session._test_created_ids.get("servers", []):
+                await session.execute(
+                    WorkspaceServer.__table__.delete().where(WorkspaceServer.id == server_id)
                 )
             for session_id in session._test_created_ids.get("sessions", []):
                 await session.execute(Session.__table__.delete().where(Session.id == session_id))
@@ -281,7 +296,7 @@ async def test_user_with_db(integration_db: AsyncSession) -> User:
         id=user_id,
         email=f"test-{user_id}@example.com",  # Unique email per test
         name="Test User",
-        password_hash=pwd_context.hash("testpass123"),
+        password_hash=_hash_password("testpass123"),
         is_active=True,
         role="member",
         created_at=datetime.now(UTC),
@@ -321,11 +336,12 @@ async def test_user_with_db(integration_db: AsyncSession) -> User:
 @pytest_asyncio.fixture
 async def admin_user_with_db(integration_db: AsyncSession) -> User:
     """Create an admin user in the database."""
+    user_id = str(uuid4())
     user = User(
-        id=str(uuid4()),
-        email="admin@example.com",
+        id=user_id,
+        email=f"admin-{user_id}@example.com",
         name="Admin User",
-        password_hash=pwd_context.hash("adminpass123"),
+        password_hash=_hash_password("adminpass123"),
         is_active=True,
         role="admin",
         created_at=datetime.now(UTC),
@@ -414,44 +430,29 @@ async def cleanup_after_test() -> AsyncGenerator[None, None]:
 
 @pytest_asyncio.fixture
 async def test_client(
-    integration_db: AsyncSession, integration_redis: Redis
+    integration_engine: AsyncEngine,
+    integration_db: AsyncSession,
+    integration_redis: Redis,
 ) -> AsyncGenerator[AsyncClient, None]:
     """Create async HTTP client with database dependency overrides.
 
-    Creates a separate engine for the test client to avoid event loop contamination.
-    The client engine is disposed before this fixture completes to ensure all
-    connections are closed in the current event loop.
+    Uses the same integration_engine as the test so all DB access runs in the
+    same event loop, avoiding 'Future attached to a different loop' errors.
     """
     from unittest.mock import AsyncMock, patch
 
     from src.database.connection import get_db
 
-    # Create a completely separate engine for the test client
-    # This avoids event loop issues with shared engines
-    test_db_url = os.getenv(
-        "DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5433/podex_test"
-    )
-    client_engine = create_async_engine(
-        test_db_url,
-        echo=False,
-        poolclass=NullPool,  # No connection pooling
-        pool_pre_ping=True,  # Verify connections before use
-    )
-
-    # Track active sessions created by the client for cleanup
+    # Use the same engine as integration_db so we stay in the same event loop
     _active_sessions = []
 
-    # Override the get_db dependency to create a new session for each request
-    # This ensures the session is created in the correct event loop context
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
-        # Create a new session for this request using client's own engine
         async_session_maker = async_sessionmaker(
-            client_engine,
+            integration_engine,
             class_=AsyncSession,
             expire_on_commit=False,
         )
         session = async_session_maker()
-        # Share the test tracking dict so cleanup works
         session._test_created_ids = integration_db._test_created_ids
         _active_sessions.append(session)
         try:
@@ -471,11 +472,41 @@ async def test_client(
     mock_revoked = patcher.start()
     mock_revoked.return_value = False
 
+    # Bypass rate limiter Redis in tests to avoid "Future attached to a different loop"
+    from src.middleware.rate_limit import RateLimitMiddleware
+
+    _orig_dispatch = RateLimitMiddleware.dispatch
+
+    async def _pass_through_dispatch(self, request, call_next):
+        return await call_next(request)
+
+    patch_rate_limit = patch.object(
+        RateLimitMiddleware, "dispatch", _pass_through_dispatch
+    )
+    patch_rate_limit.start()
+
+    # Allow Origin http://test for CSRF in integration tests
+    from src.middleware import csrf as csrf_module
+
+    _orig_is_allowed = csrf_module._is_allowed_origin
+
+    def _allow_test_origin(origin: str) -> bool:
+        if origin == "http://test":
+            return True
+        return _orig_is_allowed(origin)
+
+    patch_cors = patch.object(csrf_module, "_is_allowed_origin", _allow_test_origin)
+    patch_cors.start()
+
     client = None
     try:
         client = AsyncClient(
             transport=ASGITransport(app=app),
             base_url="http://test",
+            headers={
+                "X-Requested-With": "XMLHttpRequest",
+                "Origin": "http://test",
+            },
         )
         yield client
     finally:
@@ -500,15 +531,16 @@ async def test_client(
         with contextlib.suppress(Exception):
             patcher.stop()
 
-        # 5. Dispose the client engine - this closes all connections in THIS event loop
-        with contextlib.suppress(Exception):
-            await client_engine.dispose()
-
-        # 6. Give asyncpg time to clean up connection resources
-        await asyncio.sleep(0.05)
-
-        # 7. Restore original dependency overrides
+        # 5. Restore original dependency overrides
         app.dependency_overrides = original_overrides
+
+        # 6. Stop rate limit patch
+        with contextlib.suppress(Exception):
+            patch_rate_limit.stop()
+
+        # 7. Stop CSRF origin patch
+        with contextlib.suppress(Exception):
+            patch_cors.stop()
 
         # 8. Expire all database objects in integration_db to prevent stale references
         with contextlib.suppress(Exception):

@@ -218,3 +218,249 @@ class TestWorkspaceSettings:
         from src.config import settings
         assert settings.WORKSPACE_BASE_PATH is not None
         assert "podex" in settings.WORKSPACE_BASE_PATH
+
+
+class TestPlatformSettingsCache:
+    """Tests for platform settings cache helpers."""
+
+    @pytest.mark.asyncio
+    async def test_get_settings_from_cache_success(self, monkeypatch: pytest.MonkeyPatch):
+        """get_settings_from_cache returns dict when Redis has data."""
+        from src import config as config_module
+
+        fake_data = {"foo": "bar"}
+
+        class FakeRedisClient:
+            async def connect(self) -> None:  # pragma: no cover - trivial
+                return None
+
+            async def get_json(self, key: str) -> dict[str, Any]:
+                assert key == config_module.PLATFORM_SETTINGS_CACHE_KEY
+                return fake_data
+
+        def fake_get_redis_client(url: str) -> FakeRedisClient:
+            assert url == config_module.settings.REDIS_URL
+            return FakeRedisClient()
+
+        monkeypatch.setattr(
+            "podex_shared.redis_client.get_redis_client",
+            fake_get_redis_client,
+        )
+
+        result = await config_module.get_settings_from_cache()
+        assert result == fake_data
+
+    @pytest.mark.asyncio
+    async def test_get_settings_from_cache_error_raises(self, monkeypatch: pytest.MonkeyPatch):
+        """get_settings_from_cache wraps errors in SettingsNotAvailableError."""
+        from src import config as config_module
+
+        def fake_get_redis_client(url: str) -> Any:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(
+            "podex_shared.redis_client.get_redis_client",
+            fake_get_redis_client,
+        )
+
+        with pytest.raises(config_module.SettingsNotAvailableError):
+            await config_module.get_settings_from_cache()
+
+    @pytest.mark.asyncio
+    async def test_get_setting_from_cache_missing_key_raises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """get_setting_from_cache raises when key not present."""
+        from src import config as config_module
+
+        class FakeRedisClient:
+            async def connect(self) -> None:
+                return None
+
+            async def get_json(self, key: str) -> dict[str, Any]:
+                return {"other": "value"}
+
+        def fake_get_redis_client(url: str) -> FakeRedisClient:
+            return FakeRedisClient()
+
+        monkeypatch.setattr(
+            "podex_shared.redis_client.get_redis_client",
+            fake_get_redis_client,
+        )
+
+        with pytest.raises(config_module.SettingsNotAvailableError):
+            await config_module.get_setting_from_cache("missing_key")
+
+    @pytest.mark.asyncio
+    async def test_get_thinking_budget_config_happy_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """get_thinking_budget_config maps keys correctly."""
+        from src import config as config_module
+
+        async def fake_get_setting_from_cache(key: str) -> dict[str, int]:
+            assert key == "thinking_budget_config"
+            return {"defaultBudget": 10, "minBudget": 5, "maxBudget": 20}
+
+        monkeypatch.setattr(
+            config_module,
+            "get_setting_from_cache",
+            fake_get_setting_from_cache,
+        )
+
+        cfg = await config_module.get_thinking_budget_config()
+        assert cfg == {"default_budget": 10, "min_budget": 5, "max_budget": 20}
+
+    @pytest.mark.asyncio
+    async def test_get_thinking_budget_config_invalid_raises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """get_thinking_budget_config raises on invalid config."""
+        from src import config as config_module
+
+        async def fake_get_setting_from_cache(key: str) -> Any:
+            return "not-a-dict"
+
+        monkeypatch.setattr(
+            config_module,
+            "get_setting_from_cache",
+            fake_get_setting_from_cache,
+        )
+
+        with pytest.raises(config_module.SettingsNotAvailableError):
+            await config_module.get_thinking_budget_config()
+
+
+class TestContextLimitsConfig:
+    """Tests for get_context_limits helper."""
+
+    @pytest.mark.asyncio
+    async def test_get_context_limits_with_custom_values(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Uses values from config when present."""
+        from src import config as config_module
+
+        async def fake_get_setting_from_cache(key: str) -> dict[str, int]:
+            assert key == "context_limits"
+            return {
+                "maxContextTokens": 123,
+                "outputReservation": 456,
+                "summarizationThreshold": 789,
+                "tokenThreshold": 999,
+            }
+
+        monkeypatch.setattr(
+            config_module,
+            "get_setting_from_cache",
+            fake_get_setting_from_cache,
+        )
+
+        cfg = await config_module.get_context_limits()
+        assert cfg == {
+            "max_tokens": 123,
+            "output_reservation": 456,
+            "summarization_threshold": 789,
+            "token_threshold": 999,
+        }
+
+    @pytest.mark.asyncio
+    async def test_get_context_limits_uses_defaults_when_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Falls back to defaults when keys missing."""
+        from src import config as config_module
+
+        async def fake_get_setting_from_cache(key: str) -> dict[str, int]:
+            # Non-empty dict without expected keys should trigger defaults via .get(...)
+            return {"other": 1}
+
+        monkeypatch.setattr(
+            config_module,
+            "get_setting_from_cache",
+            fake_get_setting_from_cache,
+        )
+
+        cfg = await config_module.get_context_limits()
+        assert cfg["max_tokens"] == 100_000
+        assert cfg["output_reservation"] == 4096
+        assert cfg["token_threshold"] == 50_000
+
+    @pytest.mark.asyncio
+    async def test_get_context_limits_invalid_raises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Raises when stored value is not a dict."""
+        from src import config as config_module
+
+        async def fake_get_setting_from_cache(key: str) -> Any:
+            return None
+
+        monkeypatch.setattr(
+            config_module,
+            "get_setting_from_cache",
+            fake_get_setting_from_cache,
+        )
+
+        with pytest.raises(config_module.SettingsNotAvailableError):
+            await config_module.get_context_limits()
+
+
+class TestAnthropicPromptCachingFlag:
+    """Tests for get_anthropic_prompt_caching_enabled helper."""
+
+    @pytest.mark.asyncio
+    async def test_anthropic_prompt_caching_enabled_true(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Returns flag value when present."""
+        from src import config as config_module
+
+        async def fake_get_setting_from_cache(key: str) -> dict[str, Any]:
+            assert key == "feature_flags"
+            return {"anthropic_prompt_caching_enabled": False}
+
+        monkeypatch.setattr(
+            config_module,
+            "get_setting_from_cache",
+            fake_get_setting_from_cache,
+        )
+
+        assert await config_module.get_anthropic_prompt_caching_enabled() is False
+
+    @pytest.mark.asyncio
+    async def test_anthropic_prompt_caching_enabled_default_true_on_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Defaults to True when flag missing or unavailable."""
+        from src import config as config_module
+
+        async def fake_get_setting_from_cache(key: str) -> dict[str, Any]:
+            return {}
+
+        monkeypatch.setattr(
+            config_module,
+            "get_setting_from_cache",
+            fake_get_setting_from_cache,
+        )
+
+        assert await config_module.get_anthropic_prompt_caching_enabled() is True
+
+        async def raise_not_available(key: str) -> Any:
+            raise config_module.SettingsNotAvailableError("no cache")
+
+        monkeypatch.setattr(
+            config_module,
+            "get_setting_from_cache",
+            raise_not_available,
+        )
+
+        assert await config_module.get_anthropic_prompt_caching_enabled() is True

@@ -96,6 +96,49 @@ describe('toast utilities', () => {
       const toastCall = vi.mocked(toast).mock.calls[0];
       expect(toastCall[1]?.duration).toBe(5000);
     });
+
+    it('when user clicks Undo, undo is called and success toast shown', async () => {
+      const action = vi.fn().mockResolvedValue('result');
+      const undo = vi.fn().mockResolvedValue(undefined);
+
+      const resultPromise = undoableAction({
+        action,
+        undo,
+        message: 'Done',
+        undoMessage: 'Reverted',
+      });
+      await Promise.resolve();
+
+      const toastCall = vi.mocked(toast).mock.calls[0];
+      expect(toastCall).toBeDefined();
+      const onClick = toastCall?.[1]?.action?.onClick;
+      expect(onClick).toBeDefined();
+      await onClick?.();
+
+      expect(undo).toHaveBeenCalled();
+      expect(toast.success).toHaveBeenCalledWith('Reverted', { duration: 2000 });
+      const result = await resultPromise;
+      expect(result).toBe('result');
+    });
+
+    it('when Undo throws, error toast is shown', async () => {
+      const action = vi.fn().mockResolvedValue('result');
+      const undo = vi.fn().mockRejectedValue(new Error('undo failed'));
+
+      await undoableAction({
+        action,
+        undo,
+        message: 'Done',
+      });
+
+      const toastCall = vi.mocked(toast).mock.calls[0];
+      const onClick = toastCall[1]?.action?.onClick;
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await onClick?.();
+
+      expect(toast.error).toHaveBeenCalledWith('Failed to undo action');
+      consoleSpy.mockRestore();
+    });
   });
 
   describe('showSuccess', () => {

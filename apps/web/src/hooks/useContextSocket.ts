@@ -55,6 +55,17 @@ export function useContextSocket({ sessionId, agentIds = [] }: UseContextSocketO
         try {
           const usage = await getAgentContextUsage(agentId);
           if (isCancelled) break;
+
+          // Guard against incomplete or missing usage data
+          if (
+            !usage ||
+            typeof usage.tokens_used !== 'number' ||
+            typeof usage.tokens_max !== 'number'
+          ) {
+            console.warn(`Received invalid context usage for agent ${agentId}:`, usage);
+            continue;
+          }
+
           setAgentUsageRef.current(agentId, {
             tokensUsed: usage.tokens_used,
             tokensMax: usage.tokens_max,

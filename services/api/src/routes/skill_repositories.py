@@ -355,9 +355,8 @@ async def trigger_sync(
 
     await db.commit()
 
-    # In a real implementation, this would trigger a background task
-    # For now, we return immediately with the sync ID
-    # The actual sync would be handled by src/services/skill_sync.py
+    # In a real implementation, this would trigger a background task.
+    # For now, we return immediately with the sync ID.
 
     return SyncTriggerResponse(
         sync_id=sync_log.id,

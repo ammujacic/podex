@@ -124,8 +124,8 @@ async def check_credits_available(
     # Get prepaid credits
     credits_balance = await _get_credit_balance(db, user_id)
 
-    # Map resource type to quota type
-    quota_type = "tokens" if resource_type == "tokens" else "compute_hours"
+    # Map resource type to quota type (must match billing/webhooks: compute_credits)
+    quota_type = "tokens" if resource_type == "tokens" else "compute_credits"
 
     # Get usage quota
     quota = await _get_usage_quota(db, user_id, quota_type)
@@ -233,7 +233,7 @@ async def get_users_with_exhausted_credits(
     Returns:
         List of user IDs with exhausted credits
     """
-    quota_type = "tokens" if resource_type == "tokens" else "compute_hours"
+    quota_type = "tokens" if resource_type == "tokens" else "compute_credits"
 
     # Find users with exceeded quotas where overage was allowed
     # but who now have no credits

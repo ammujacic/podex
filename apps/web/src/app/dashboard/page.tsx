@@ -317,6 +317,8 @@ export default function DashboardPage() {
       return;
     }
 
+    let isCancelled = false;
+
     async function loadData() {
       try {
         setLoadError(null);
@@ -328,6 +330,7 @@ export default function DashboardPage() {
             getActivityFeed(10).catch(() => ({ items: [], has_more: false })),
             getNotifications().catch(() => ({ items: [], unread_count: 0 })),
           ]);
+        if (isCancelled) return;
         setSessions(sessionsData.items);
         setTemplates(templatesData);
         setStats(statsData);
@@ -335,14 +338,19 @@ export default function DashboardPage() {
         setNotifications(notificationsData.items);
         setUnreadCount(notificationsData.unread_count);
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to load dashboard data';
-        setLoadError(message);
+        if (!isCancelled) {
+          const message = error instanceof Error ? error.message : 'Failed to load dashboard data';
+          setLoadError(message);
+        }
       } finally {
-        setLoading(false);
+        if (!isCancelled) setLoading(false);
       }
     }
 
     loadData();
+    return () => {
+      isCancelled = true;
+    };
   }, [user, router, isInitialized]);
 
   // Fetch actual workspace status from compute when we have sessions (GET /status syncs from compute)
@@ -379,6 +387,8 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!user || !configIsInitialized) return;
 
+    let isCancelled = false;
+
     async function loadUsageData() {
       try {
         setLoadingUsage(true);
@@ -392,13 +402,7 @@ export default function DashboardPage() {
             period_end: '',
           };
         });
-        // Debug: Uncomment to see usage data loading
-        // console.log('Usage history loaded:', {
-        //   period: selectedPeriod,
-        //   days,
-        //   dataPoints: usageData.daily.length,
-        //   totalTokens: usageData.daily.reduce((sum, p) => sum + p.tokens, 0),
-        // });
+        if (isCancelled) return;
         setUsageHistory(usageData.daily);
         setPodUsageData(usageData.by_pod);
         // Initialize all pods as visible
@@ -406,11 +410,14 @@ export default function DashboardPage() {
       } catch (error) {
         console.error('Failed to load usage history:', error);
       } finally {
-        setLoadingUsage(false);
+        if (!isCancelled) setLoadingUsage(false);
       }
     }
 
     loadUsageData();
+    return () => {
+      isCancelled = true;
+    };
   }, [selectedPeriod, user, configIsInitialized]);
 
   const getTemplateForSession = (session: Session): PodTemplate | undefined => {

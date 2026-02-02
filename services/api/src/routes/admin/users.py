@@ -738,13 +738,13 @@ async def get_user_usage(
             )
         )
 
-        # Aggregate by type
+        # Aggregate by type (compute_credits: limit_value/current_usage are in cents)
         if quota.quota_type == "tokens":
             tokens_used = int(quota.current_usage)
             tokens_limit = int(quota.limit_value)
-        elif quota.quota_type == "compute_hours":
-            compute_cents_used = int(quota.current_usage * 100)  # Convert to cents
-            compute_cents_limit = int(quota.limit_value * 100)
+        elif quota.quota_type == "compute_credits":
+            compute_cents_used = int(quota.current_usage)
+            compute_cents_limit = int(quota.limit_value)
         elif quota.quota_type == "storage_gb":
             storage_gb_used = float(quota.current_usage)
             storage_gb_limit = float(quota.limit_value)

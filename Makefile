@@ -323,7 +323,7 @@ test-compute:
 	$(MAKE) test-clean; \
 	echo ""; \
 	if [ $$TEST_FAILED -eq 0 ]; then \
-		echo "$(GREEN)✓ Compute tests passed with 90%+ coverage!$(NC)"; \
+		echo "$(GREEN)✓ Compute tests passed with 80%+ coverage!$(NC)"; \
 	else \
 		echo "$(RED)✗ Compute tests failed$(NC)"; \
 		exit 1; \

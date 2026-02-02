@@ -75,7 +75,8 @@ async def test_user_fixture(test_user_with_db: User, integration_db: AsyncSessio
 async def test_admin_user_fixture(admin_user_with_db: User, integration_db: AsyncSession):
     """Test that admin user fixture creates an admin properly."""
     assert admin_user_with_db.id is not None
-    assert admin_user_with_db.email == "admin@example.com"
+    assert admin_user_with_db.email.startswith("admin-")
+    assert admin_user_with_db.email.endswith("@example.com")
     assert admin_user_with_db.role == "admin"
 
 

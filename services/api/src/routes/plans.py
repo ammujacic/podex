@@ -185,7 +185,7 @@ async def get_plan(
     """Get a specific execution plan."""
     plan = await db.get(ExecutionPlan, plan_id)
 
-    if not plan or plan.session_id != session_id:
+    if not plan or str(plan.session_id) != str(session_id):
         raise HTTPException(status_code=404, detail="Plan not found")
 
     # Verify session access
@@ -210,7 +210,7 @@ async def approve_plan(
     """Approve a pending execution plan."""
     plan = await db.get(ExecutionPlan, plan_id)
 
-    if not plan or plan.session_id != session_id:
+    if not plan or str(plan.session_id) != str(session_id):
         raise HTTPException(status_code=404, detail="Plan not found")
 
     # Verify session access
@@ -249,7 +249,7 @@ async def reject_plan(
     """Reject a pending execution plan."""
     plan = await db.get(ExecutionPlan, plan_id)
 
-    if not plan or plan.session_id != session_id:
+    if not plan or str(plan.session_id) != str(session_id):
         raise HTTPException(status_code=404, detail="Plan not found")
 
     # Verify session access
@@ -286,7 +286,7 @@ async def cancel_plan(
     """Cancel an executing plan."""
     plan = await db.get(ExecutionPlan, plan_id)
 
-    if not plan or plan.session_id != session_id:
+    if not plan or str(plan.session_id) != str(session_id):
         raise HTTPException(status_code=404, detail="Plan not found")
 
     # Verify session access
@@ -322,7 +322,7 @@ async def pause_plan(
     """Pause an executing plan."""
     plan = await db.get(ExecutionPlan, plan_id)
 
-    if not plan or plan.session_id != session_id:
+    if not plan or str(plan.session_id) != str(session_id):
         raise HTTPException(status_code=404, detail="Plan not found")
 
     # Verify session access
@@ -357,7 +357,7 @@ async def resume_plan(
     """Resume a paused plan."""
     plan = await db.get(ExecutionPlan, plan_id)
 
-    if not plan or plan.session_id != session_id:
+    if not plan or str(plan.session_id) != str(session_id):
         raise HTTPException(status_code=404, detail="Plan not found")
 
     # Verify session access

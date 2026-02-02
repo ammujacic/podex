@@ -278,6 +278,31 @@ describe('Collaboration Module', () => {
       expect(mockSocket.on).toHaveBeenCalledWith('disconnect', expect.any(Function));
     });
 
+    it('should re-subscribe to documents on connect when docCache has entries', () => {
+      collaborationModule.getYDoc('session-1', 'doc1');
+      (mockSocket.emit as Mock).mockClear();
+
+      const connectHandler = eventHandlers.get('connect');
+      expect(connectHandler).toBeDefined();
+      connectHandler?.();
+
+      expect(mockSocket.emit).toHaveBeenCalledWith('yjs_subscribe', {
+        session_id: 'session-1',
+        doc_name: 'doc1',
+      });
+    });
+
+    it('should remove remote awareness states on disconnect', () => {
+      collaborationModule.getAwareness('session-1', 'file:/workspace/app.tsx');
+      lastAwareness?.setRemoteState(999, { user: { id: 'r1', name: 'Remote', color: '#000' } });
+
+      const disconnectHandler = eventHandlers.get('disconnect');
+      expect(disconnectHandler).toBeDefined();
+      disconnectHandler?.();
+
+      expect(awarenessProtocol.removeAwarenessStates).toHaveBeenCalled();
+    });
+
     it('should return connection status', () => {
       // Get socket first to ensure it's created
       collaborationModule.getSocket();
@@ -574,6 +599,19 @@ describe('Collaboration Module', () => {
       expect(awarenessCalls.length).toBe(0);
     });
 
+    it('should not broadcast when awareness update has no changed clients', () => {
+      collaborationModule.getAwareness('session-1', 'file:/workspace/app.tsx');
+      (mockSocket.emit as Mock).mockClear();
+
+      const updateHandler = lastAwareness?.updateHandler;
+      updateHandler?.({ added: [], updated: [], removed: [] });
+
+      const awarenessCalls = (mockSocket.emit as Mock).mock.calls.filter(
+        (call) => call[0] === 'yjs_awareness'
+      );
+      expect(awarenessCalls.length).toBe(0);
+    });
+
     it('should emit awareness remove on document cleanup', () => {
       collaborationModule.getAwareness('session-1', 'file:/workspace/app.tsx');
       collaborationModule.destroyYDoc('session-1', 'file:/workspace/app.tsx');
@@ -586,6 +624,14 @@ describe('Collaboration Module', () => {
           client_ids: [12345],
         })
       );
+    });
+
+    it('should remove beforeunload handler on destroyYDoc when window exists', () => {
+      const removeSpy = vi.spyOn(window, 'removeEventListener');
+      collaborationModule.getAwareness('session-1', 'file:/workspace/app.tsx');
+      collaborationModule.destroyYDoc('session-1', 'file:/workspace/app.tsx');
+      expect(removeSpy).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+      removeSpy.mockRestore();
     });
   });
 

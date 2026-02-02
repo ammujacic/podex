@@ -326,7 +326,6 @@ async def get_revenue_analytics(
 ) -> RevenueMetrics:
     """Get revenue analytics."""
     start_date, _end_date = get_date_range(days)
-    start_date - timedelta(days=days)
 
     # Current MRR
     mrr_result = await db.execute(
