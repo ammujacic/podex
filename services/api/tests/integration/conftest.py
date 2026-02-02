@@ -45,6 +45,7 @@ from src.database.models import (
     PodTemplate,
     SkillTemplate,
     SystemSkill,
+    WorkspaceServer,
 )
 from src.database.seeds import (
     DEFAULT_AGENT_ROLES,
@@ -60,6 +61,7 @@ from src.database.seeds import (
     DEFAULT_SYSTEM_SKILLS,
     OFFICIAL_TEMPLATES,
 )
+from src.database.seeds.workspace_servers import DEV_WORKSPACE_SERVERS
 from src.main import app
 
 
@@ -201,8 +203,37 @@ async def load_seed_data(engine: AsyncEngine) -> None:
         for health_data in DEFAULT_HEALTH_CHECKS:
             session.add(HealthCheck(**health_data))
 
+        # Load Workspace Servers (for session creation / compute tests)
+        for server_data in DEV_WORKSPACE_SERVERS:
+            result = await session.execute(
+                select(WorkspaceServer).where(
+                    WorkspaceServer.hostname == server_data["hostname"]
+                )
+            )
+            if result.scalar_one_or_none() is None:
+                session.add(WorkspaceServer(**server_data))
+
         await session.commit()
         _seed_data_loaded = True
+
+
+async def ensure_workspace_servers(engine: AsyncEngine) -> None:
+    """Ensure workspace servers exist (for session/create tests). Idempotent."""
+    async_session_maker = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    async with async_session_maker() as session:
+        for server_data in DEV_WORKSPACE_SERVERS:
+            result = await session.execute(
+                select(WorkspaceServer).where(
+                    WorkspaceServer.hostname == server_data["hostname"]
+                )
+            )
+            if result.scalar_one_or_none() is None:
+                session.add(WorkspaceServer(**server_data))
+        await session.commit()
 
 
 @pytest_asyncio.fixture
@@ -214,6 +245,8 @@ async def integration_db(integration_engine: AsyncEngine) -> AsyncGenerator[Asyn
     """
     # Ensure seed data is loaded using this test's engine
     await load_seed_data(integration_engine)
+    # Ensure workspace servers exist (for session creation tests)
+    await ensure_workspace_servers(integration_engine)
 
     # Create a session for this test
     async_session_maker = async_sessionmaker(

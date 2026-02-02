@@ -100,6 +100,14 @@ jobs:
       - name: Run tests with coverage (80% required)
         run: pnpm --filter @podex/${{ matrix.package }} test:coverage
 
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-package-${{ matrix.package }}
+          path: packages/${{ matrix.package }}/coverage/coverage-summary.json
+          retention-days: 7
+
   # CLI unit tests with coverage (separate because package name is 'podex' not '@podex/cli')
   cli-test:
     name: CLI Unit Tests
@@ -121,6 +129,14 @@ jobs:
       - name: Run tests with coverage
         working-directory: apps/cli
         run: pnpm vitest run --coverage
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-cli
+          path: apps/cli/coverage/coverage-summary.json
+          retention-days: 7
 
   # VSCode extension tests
   vscode-extension-test:
@@ -155,6 +171,14 @@ jobs:
       - name: Build extension
         run: pnpm build
         working-directory: apps/vscode
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-vscode
+          path: apps/vscode/coverage/coverage-summary.json
+          retention-days: 7
 
   # CLI E2E Tests
   cli-e2e-test:
@@ -203,6 +227,14 @@ jobs:
       - name: Run unit tests with coverage
         run: pnpm test:coverage
         working-directory: apps/web
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-web
+          path: apps/web/coverage/coverage-summary.json
+          retention-days: 7
 
   # ==========================================
   # Backend Lint & Type Check (runs first)
@@ -318,6 +350,14 @@ jobs:
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
 
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-api
+          path: services/api/coverage.xml
+          retention-days: 7
+
   # Backend Agent service tests
   backend-agent-test:
     name: Backend Agent Tests
@@ -371,6 +411,14 @@ jobs:
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
 
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-agent
+          path: services/agent/coverage.xml
+          retention-days: 7
+
   # Backend Compute service tests
   backend-compute-test:
     name: Backend Compute Tests
@@ -408,6 +456,14 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-compute
+          path: services/compute/coverage.xml
+          retention-days: 7
 
   # Backend Shared library tests (with integration tests)
   backend-shared-test:
@@ -448,6 +504,14 @@ jobs:
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
 
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-shared
+          path: services/shared/coverage.xml
+          retention-days: 7
+
   # Backend Local-Pod service tests
   backend-local-pod-test:
     name: Backend Local-Pod Tests
@@ -474,6 +538,14 @@ jobs:
 
       - name: Run tests with coverage
         run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-local-pod
+          path: services/local-pod/coverage.xml
+          retention-days: 7
 
   # ==========================================
   # E2E Tests (Playwright)
@@ -709,5 +781,75 @@ jobs:
       - docker-build
       - security-scan
     steps:
-      - name: All tests passed
-        run: echo "All tests passed successfully!"
+      - name: Download all coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: coverage-reports
+          merge-multiple: false
+
+      - name: Coverage Summary
+        run: |
+          echo "=============================================="
+          echo "           COVERAGE SUMMARY                   "
+          echo "=============================================="
+          echo ""
+          printf "%-25s %8s %8s %8s %8s\n" "Component" "Lines" "Stmts" "Branch" "Target"
+          printf "%-25s %8s %8s %8s %8s\n" "-------------------------" "--------" "--------" "--------" "--------"
+
+          # Function to parse Vitest JSON coverage (frontend)
+          parse_vitest_coverage() {
+            local name=$1
+            local file=$2
+            if [ -f "$file" ]; then
+              lines=$(jq -r '.total.lines.pct // "N/A"' "$file" 2>/dev/null || echo "N/A")
+              stmts=$(jq -r '.total.statements.pct // "N/A"' "$file" 2>/dev/null || echo "N/A")
+              branches=$(jq -r '.total.branches.pct // "N/A"' "$file" 2>/dev/null || echo "N/A")
+              printf "%-25s %7.1f%% %7.1f%% %7.1f%% %8s\n" "$name" "$lines" "$stmts" "$branches" "80%"
+            else
+              printf "%-25s %8s %8s %8s %8s\n" "$name" "N/A" "N/A" "N/A" "80%"
+            fi
+          }
+
+          # Function to parse pytest XML coverage (backend)
+          parse_pytest_coverage() {
+            local name=$1
+            local file=$2
+            if [ -f "$file" ]; then
+              # Extract line-rate and branch-rate from coverage XML
+              line_rate=$(grep -o 'line-rate="[^"]*"' "$file" | head -1 | grep -o '[0-9.]*' || echo "0")
+              branch_rate=$(grep -o 'branch-rate="[^"]*"' "$file" | head -1 | grep -o '[0-9.]*' || echo "0")
+              lines_pct=$(echo "$line_rate * 100" | bc -l 2>/dev/null || echo "N/A")
+              branch_pct=$(echo "$branch_rate * 100" | bc -l 2>/dev/null || echo "N/A")
+              printf "%-25s %7.1f%% %8s %7.1f%% %8s\n" "$name" "$lines_pct" "-" "$branch_pct" "80%"
+            else
+              printf "%-25s %8s %8s %8s %8s\n" "$name" "N/A" "-" "N/A" "80%"
+            fi
+          }
+
+          echo ""
+          echo "Frontend Packages:"
+          parse_vitest_coverage "  @podex/shared" "coverage-reports/coverage-package-shared/coverage-summary.json"
+          parse_vitest_coverage "  @podex/api-client" "coverage-reports/coverage-package-api-client/coverage-summary.json"
+          parse_vitest_coverage "  @podex/state" "coverage-reports/coverage-package-state/coverage-summary.json"
+          parse_vitest_coverage "  @podex/ui" "coverage-reports/coverage-package-ui/coverage-summary.json"
+          parse_vitest_coverage "  @podex/local-pod-disc" "coverage-reports/coverage-package-local-pod-discovery/coverage-summary.json"
+
+          echo ""
+          echo "Frontend Apps:"
+          parse_vitest_coverage "  web" "coverage-reports/coverage-web/coverage-summary.json"
+          parse_vitest_coverage "  cli" "coverage-reports/coverage-cli/coverage-summary.json"
+          parse_vitest_coverage "  vscode" "coverage-reports/coverage-vscode/coverage-summary.json"
+
+          echo ""
+          echo "Backend Services:"
+          parse_pytest_coverage "  api" "coverage-reports/coverage-api/coverage.xml"
+          parse_pytest_coverage "  agent" "coverage-reports/coverage-agent/coverage.xml"
+          parse_pytest_coverage "  compute" "coverage-reports/coverage-compute/coverage.xml"
+          parse_pytest_coverage "  shared" "coverage-reports/coverage-shared/coverage.xml"
+          parse_pytest_coverage "  local-pod" "coverage-reports/coverage-local-pod/coverage.xml"
+
+          echo ""
+          echo "=============================================="
+          echo "All tests passed successfully!"
+          echo "=============================================="
