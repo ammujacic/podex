@@ -236,6 +236,7 @@ async def test_list_pending_plans_200(monkeypatch: pytest.MonkeyPatch) -> None:
         session_id=session_id,
         db=db,
         current_user={"id": "u1"},
+        limit=100,
     )
     assert len(result) == 1
     assert result[0].status == "pending_approval"
@@ -296,6 +297,7 @@ async def test_list_pending_plans_404(monkeypatch: pytest.MonkeyPatch) -> None:
             session_id=session_id,
             db=db,
             current_user={"id": "u1"},
+            limit=100,
         )
     assert exc.value.status_code == 404
     assert "Session" in exc.value.detail
@@ -317,6 +319,7 @@ async def test_list_pending_plans_403(monkeypatch: pytest.MonkeyPatch) -> None:
             session_id=session_id,
             db=db,
             current_user={"id": "u1"},
+            limit=100,
         )
     assert exc.value.status_code == 403
 
