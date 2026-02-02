@@ -122,6 +122,7 @@ describe('sentryStore', () => {
         isConfigured: false,
         serverId: null,
         isCheckingConfig: false,
+        lastDataFetch: null,
         setupToken: '',
         setupShowToken: false,
         setupRegion: '',
