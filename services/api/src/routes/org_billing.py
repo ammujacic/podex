@@ -257,7 +257,7 @@ async def get_user_from_request(request: Request, db: AsyncSession) -> User:
 async def get_org_subscription(
     org_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> OrgSubscriptionResponse | None:
     """Get the organization's active subscription."""
@@ -308,7 +308,7 @@ async def get_org_subscription(
 async def create_org_subscription_checkout(
     org_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     data: OrgCheckoutSubscriptionRequest,
     db: DbSession,
 ) -> CheckoutResponse:
@@ -418,7 +418,7 @@ async def create_org_subscription_checkout(
 async def create_org_credits_checkout(
     org_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     data: OrgCheckoutCreditsRequest,
     db: DbSession,
 ) -> CheckoutResponse:
@@ -490,7 +490,7 @@ async def create_org_credits_checkout(
 async def create_org_portal_session(
     org_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     data: OrgPortalRequest,
     db: DbSession,
 ) -> PortalResponse:
@@ -531,7 +531,7 @@ async def create_org_portal_session(
 async def list_org_payment_methods(
     org_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> OrgPaymentMethodsListResponse:
     """List organization's saved payment methods from Stripe.
@@ -546,7 +546,6 @@ async def list_org_payment_methods(
     org, _ = await get_org_and_verify_owner(db, org_id, str(user.id))
 
     if not org.stripe_customer_id:
-        # Org has no Stripe customer yet; return empty list
         return OrgPaymentMethodsListResponse(payment_methods=[], default_payment_method_id=None)
 
     try:
@@ -589,7 +588,7 @@ async def list_org_payment_methods(
 async def cancel_org_subscription(
     org_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> dict[str, str]:
     """Cancel the organization's subscription at period end.
@@ -641,7 +640,7 @@ async def cancel_org_subscription(
 async def update_org_seats(
     org_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     data: OrgUpdateSeatsRequest,
     db: DbSession,
 ) -> dict[str, Any]:
@@ -735,7 +734,7 @@ async def update_org_seats(
 async def list_org_invoices(
     org_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> list[dict[str, Any]]:
     """List invoices for the organization from Stripe."""
@@ -777,7 +776,7 @@ async def list_org_invoices(
 async def list_org_transactions(
     org_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     db: DbSession,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
@@ -811,13 +810,14 @@ async def list_org_transactions(
 async def get_org_usage_breakdown(
     org_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     db: DbSession,
 ) -> OrgUsageResponse:
     """Get detailed usage breakdown for the organization.
 
     Aggregates usage by model, member, and session for the current billing period.
     """
+    from sqlalchemy import case  # noqa: PLC0415
     from sqlalchemy import func as sqlfunc  # noqa: PLC0415
 
     user = await get_user_from_request(request, db)
@@ -906,7 +906,7 @@ async def get_org_usage_breakdown(
             User.name,
             User.email,
             sqlfunc.sum(
-                sqlfunc.case(
+                case(
                     (
                         OrganizationUsageRecord.usage_type == "tokens",
                         OrganizationUsageRecord.quantity,
@@ -915,7 +915,7 @@ async def get_org_usage_breakdown(
                 )
             ).label("total_tokens"),
             sqlfunc.sum(
-                sqlfunc.case(
+                case(
                     (
                         OrganizationUsageRecord.usage_type == "compute",
                         OrganizationUsageRecord.total_cost_cents,
@@ -988,7 +988,7 @@ async def get_org_usage_breakdown(
 async def create_plan_change_checkout(
     org_id: str,
     request: Request,
-    _response: Response,
+    response: Response,  # noqa: ARG001
     data: PlanChangeRequest,
     db: DbSession,
 ) -> CheckoutResponse:

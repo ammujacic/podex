@@ -336,3 +336,233 @@ async def test_list_org_payment_methods_empty_when_no_stripe_customer(
     data = resp.json()
     assert data["payment_methods"] == []
     assert data["default_payment_method_id"] is None
+
+
+# ============== GET subscription success, portal, cancel, usage, invoices, transactions ==============
+
+
+@pytest.mark.asyncio
+async def test_get_org_subscription_returns_data_when_subscription_exists(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    test_user_with_db,  # noqa: ANN001
+    auth_headers_with_db: dict[str, str],
+) -> None:
+    """GET subscription when org has active subscription returns subscription data."""
+    org_id = str(uuid4())
+    await _create_org_with_owner(
+        integration_db, org_id=org_id, user_id=test_user_with_db.id
+    )
+
+    now = datetime.now(UTC)
+    plan = SubscriptionPlan(
+        name="Pro Plan",
+        slug=f"pro-{uuid4()}",
+        price_monthly_cents=2900,
+        price_yearly_cents=29_000,
+        tokens_included=0,
+        compute_credits_cents_included=0,
+        storage_gb_included=0,
+        max_agents=2,
+        max_sessions=5,
+        max_team_members=5,
+        features={},
+    )
+    integration_db.add(plan)
+    await integration_db.flush()
+
+    sub = OrganizationSubscription(
+        organization_id=org_id,
+        plan_id=plan.id,
+        status="active",
+        billing_cycle="monthly",
+        seat_count=2,
+        current_period_start=now,
+        current_period_end=now + timedelta(days=30),
+        cancel_at_period_end=False,
+    )
+    integration_db.add(sub)
+    await integration_db.commit()
+
+    resp = await test_client.get(
+        f"/api/organizations/{org_id}/billing/subscription",
+        headers=auth_headers_with_db,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data is not None
+    assert data["plan_name"] == "Pro Plan"
+    assert data["plan_slug"] == plan.slug
+    assert data["status"] == "active"
+    assert data["seat_count"] == 2
+    assert "current_period_start" in data
+    assert "current_period_end" in data
+
+
+@pytest.mark.asyncio
+async def test_org_portal_returns_503_when_stripe_not_configured(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    test_user_with_db,  # noqa: ANN001
+    auth_headers_with_db: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POST portal when Stripe is not configured returns 503."""
+    from src import config as config_module
+
+    monkeypatch.setattr(
+        config_module.settings, "STRIPE_SECRET_KEY", "", raising=False
+    )
+    org_id = str(uuid4())
+    await _create_org_with_owner(
+        integration_db, org_id=org_id, user_id=test_user_with_db.id
+    )
+
+    resp = await test_client.post(
+        f"/api/organizations/{org_id}/billing/portal",
+        json={},
+        headers=auth_headers_with_db,
+    )
+    assert resp.status_code == 503
+    assert "Stripe" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_subscription_returns_404_when_no_subscription(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    test_user_with_db,  # noqa: ANN001
+    auth_headers_with_db: dict[str, str],
+) -> None:
+    """POST cancel-subscription when org has no subscription returns 404."""
+    org_id = str(uuid4())
+    await _create_org_with_owner(
+        integration_db, org_id=org_id, user_id=test_user_with_db.id
+    )
+
+    resp = await test_client.post(
+        f"/api/organizations/{org_id}/billing/cancel-subscription",
+        headers=auth_headers_with_db,
+    )
+    assert resp.status_code == 404
+    assert "No active subscription" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_subscription_success_when_subscription_exists(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    test_user_with_db,  # noqa: ANN001
+    auth_headers_with_db: dict[str, str],
+) -> None:
+    """POST cancel-subscription when org has active subscription (no Stripe id) succeeds."""
+    org_id = str(uuid4())
+    await _create_org_with_owner(
+        integration_db, org_id=org_id, user_id=test_user_with_db.id
+    )
+
+    now = datetime.now(UTC)
+    plan = SubscriptionPlan(
+        name="Basic",
+        slug=f"basic-{uuid4()}",
+        price_monthly_cents=0,
+        price_yearly_cents=0,
+        tokens_included=0,
+        compute_credits_cents_included=0,
+        storage_gb_included=0,
+        max_agents=1,
+        max_sessions=1,
+        max_team_members=1,
+        features={},
+    )
+    integration_db.add(plan)
+    await integration_db.flush()
+
+    sub = OrganizationSubscription(
+        organization_id=org_id,
+        plan_id=plan.id,
+        status="active",
+        billing_cycle="monthly",
+        seat_count=1,
+        current_period_start=now,
+        current_period_end=now + timedelta(days=30),
+        cancel_at_period_end=False,
+        stripe_subscription_id=None,  # no Stripe call
+    )
+    integration_db.add(sub)
+    await integration_db.commit()
+
+    resp = await test_client.post(
+        f"/api/organizations/{org_id}/billing/cancel-subscription",
+        headers=auth_headers_with_db,
+    )
+    assert resp.status_code == 200
+    assert "canceled" in resp.json()["message"].lower() or "end" in resp.json()["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_get_org_usage_returns_structure(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    test_user_with_db,  # noqa: ANN001
+    auth_headers_with_db: dict[str, str],
+) -> None:
+    """GET usage returns usage breakdown structure (can be empty)."""
+    org_id = str(uuid4())
+    await _create_org_with_owner(
+        integration_db, org_id=org_id, user_id=test_user_with_db.id
+    )
+
+    resp = await test_client.get(
+        f"/api/organizations/{org_id}/billing/usage",
+        headers=auth_headers_with_db,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "period_start" in data and "period_end" in data
+    assert "total_tokens" in data and "total_cost_cents" in data
+    assert "by_model" in data and "by_member" in data and "by_session" in data
+
+
+@pytest.mark.asyncio
+async def test_list_org_invoices_returns_empty_when_no_stripe_customer(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    test_user_with_db,  # noqa: ANN001
+    auth_headers_with_db: dict[str, str],
+) -> None:
+    """GET invoices when org has no Stripe customer returns empty list."""
+    org_id = str(uuid4())
+    await _create_org_with_owner(
+        integration_db, org_id=org_id, user_id=test_user_with_db.id
+    )
+    # org.stripe_customer_id is None by default
+
+    resp = await test_client.get(
+        f"/api/organizations/{org_id}/billing/invoices",
+        headers=auth_headers_with_db,
+    )
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_list_org_transactions_returns_list(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    test_user_with_db,  # noqa: ANN001
+    auth_headers_with_db: dict[str, str],
+) -> None:
+    """GET transactions returns list (can be empty)."""
+    org_id = str(uuid4())
+    await _create_org_with_owner(
+        integration_db, org_id=org_id, user_id=test_user_with_db.id
+    )
+
+    resp = await test_client.get(
+        f"/api/organizations/{org_id}/billing/transactions",
+        headers=auth_headers_with_db,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data, list)

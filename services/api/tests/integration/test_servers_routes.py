@@ -290,3 +290,215 @@ async def test_list_servers_filter_by_status_and_region(
     assert all(s["region"] == "us" and s["status"] == ServerStatus.ACTIVE for s in servers)
     assert any(s["id"] == us_id for s in servers)
     assert not any(s["id"] == eu_id for s in servers)
+
+
+# ============== Heartbeat, health, drain, activate, cluster/status, capacity ==============
+
+
+@pytest.mark.asyncio
+async def test_server_heartbeat_updates_server(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    admin_headers_with_db: dict[str, str],
+) -> None:
+    """POST /servers/{server_id}/heartbeat updates server stats and returns health."""
+    sid = f"srv-{uuid4()}"
+    server = _make_server(server_id=sid, hostname=sid)
+    integration_db.add(server)
+    await integration_db.commit()
+    if hasattr(integration_db, "_test_created_ids"):
+        integration_db._test_created_ids["servers"].append(server.id)
+
+    resp = await test_client.post(
+        f"/api/servers/{server.id}/heartbeat",
+        headers=admin_headers_with_db,
+        params={
+            "used_cpu": 2.0,
+            "used_memory_mb": 2048,
+            "active_workspaces": 1,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["server_id"] == server.id
+    assert data["status"] == ServerStatus.ACTIVE
+    assert "cpu_utilization" in data
+    assert data["active_workspaces"] == 1
+
+
+@pytest.mark.asyncio
+async def test_server_heartbeat_not_found(
+    test_client: AsyncClient,
+    admin_headers_with_db: dict[str, str],
+) -> None:
+    """POST /servers/{server_id}/heartbeat with unknown server returns 404."""
+    resp = await test_client.post(
+        "/api/servers/00000000-0000-0000-0000-000000000000/heartbeat",
+        headers=admin_headers_with_db,
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_server_health(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    admin_headers_with_db: dict[str, str],
+) -> None:
+    """GET /servers/{server_id}/health returns server health (admin only)."""
+    sid = f"srv-{uuid4()}"
+    server = _make_server(server_id=sid, hostname=sid)
+    integration_db.add(server)
+    await integration_db.commit()
+    if hasattr(integration_db, "_test_created_ids"):
+        integration_db._test_created_ids["servers"].append(server.id)
+
+    resp = await test_client.get(
+        f"/api/servers/{server.id}/health",
+        headers=admin_headers_with_db,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["server_id"] == server.id
+    assert "cpu_utilization" in data
+    assert "is_healthy" in data
+
+
+@pytest.mark.asyncio
+async def test_get_server_health_not_found(
+    test_client: AsyncClient,
+    admin_headers_with_db: dict[str, str],
+) -> None:
+    """GET /servers/{server_id}/health with unknown server returns 404."""
+    resp = await test_client.get(
+        "/api/servers/00000000-0000-0000-0000-000000000000/health",
+        headers=admin_headers_with_db,
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_drain_server(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    admin_headers_with_db: dict[str, str],
+) -> None:
+    """POST /servers/{server_id}/drain sets server to draining (admin only)."""
+    sid = f"srv-{uuid4()}"
+    server = _make_server(server_id=sid, hostname=sid, active_workspaces=0)
+    integration_db.add(server)
+    await integration_db.commit()
+    if hasattr(integration_db, "_test_created_ids"):
+        integration_db._test_created_ids["servers"].append(server.id)
+
+    resp = await test_client.post(
+        f"/api/servers/{server.id}/drain",
+        headers=admin_headers_with_db,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == server.id
+    assert data["status"] == ServerStatus.DRAINING
+
+
+@pytest.mark.asyncio
+async def test_activate_server(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    admin_headers_with_db: dict[str, str],
+) -> None:
+    """POST /servers/{server_id}/activate sets server to active (admin only)."""
+    sid = f"srv-{uuid4()}"
+    server = _make_server(server_id=sid, hostname=sid)
+    server.status = ServerStatus.DRAINING
+    integration_db.add(server)
+    await integration_db.commit()
+    if hasattr(integration_db, "_test_created_ids"):
+        integration_db._test_created_ids["servers"].append(server.id)
+
+    resp = await test_client.post(
+        f"/api/servers/{server.id}/activate",
+        headers=admin_headers_with_db,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == server.id
+    assert data["status"] == ServerStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_get_cluster_status(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    admin_headers_with_db: dict[str, str],
+) -> None:
+    """GET /servers/cluster/status returns cluster status (admin only)."""
+    sid = f"srv-{uuid4()}"
+    server = _make_server(server_id=sid, hostname=sid)
+    integration_db.add(server)
+    await integration_db.commit()
+    if hasattr(integration_db, "_test_created_ids"):
+        integration_db._test_created_ids["servers"].append(server.id)
+
+    resp = await test_client.get(
+        "/api/servers/cluster/status",
+        headers=admin_headers_with_db,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "total_servers" in data
+    assert "active_servers" in data
+    assert "healthy_servers" in data
+    assert "servers" in data
+    assert isinstance(data["servers"], list)
+
+
+@pytest.mark.asyncio
+async def test_get_region_capacity(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    auth_headers_with_db: dict[str, str],
+) -> None:
+    """GET /servers/capacity/{region} returns capacity per tier (no admin required)."""
+    sid = f"srv-{uuid4()}"
+    server = _make_server(server_id=sid, hostname=sid, region="us-west")
+    integration_db.add(server)
+    await integration_db.commit()
+    if hasattr(integration_db, "_test_created_ids"):
+        integration_db._test_created_ids["servers"].append(server.id)
+
+    resp = await test_client.get(
+        "/api/servers/capacity/us-west",
+        headers=auth_headers_with_db,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["region"] == "us-west"
+    assert "tiers" in data
+    assert isinstance(data["tiers"], dict)
+
+
+@pytest.mark.asyncio
+async def test_get_server_workspaces(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    admin_headers_with_db: dict[str, str],
+) -> None:
+    """GET /servers/{server_id}/workspaces returns workspaces on server (admin only)."""
+    sid = f"srv-{uuid4()}"
+    server = _make_server(server_id=sid, hostname=sid)
+    integration_db.add(server)
+    await integration_db.commit()
+    if hasattr(integration_db, "_test_created_ids"):
+        integration_db._test_created_ids["servers"].append(server.id)
+
+    resp = await test_client.get(
+        f"/api/servers/{server.id}/workspaces",
+        headers=admin_headers_with_db,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["server_id"] == server.id
+    assert "workspaces" in data
+    assert "total_count" in data
+    assert isinstance(data["workspaces"], list)

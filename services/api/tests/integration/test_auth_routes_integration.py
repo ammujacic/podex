@@ -365,3 +365,299 @@ async def test_password_check_returns_strength_and_errors(test_client: AsyncClie
     )
     assert resp_strong.status_code == 200
     assert resp_strong.json()["is_valid"] is True
+
+
+# ============== Authenticated endpoints (use auth_headers_with_db) ==============
+
+
+@pytest.mark.asyncio
+async def test_me_returns_user_when_authenticated(
+    test_client: AsyncClient,
+    auth_headers_with_db: dict[str, str],
+    test_user_with_db: User,
+) -> None:
+    """GET /auth/me with valid JWT returns current user."""
+    resp = await test_client.get("/api/auth/me", headers=auth_headers_with_db)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == test_user_with_db.id
+    assert data["email"] == test_user_with_db.email
+    assert data["name"] == test_user_with_db.name
+    assert "role" in data
+
+
+@pytest.mark.asyncio
+async def test_logout_returns_success_when_authenticated(
+    test_client: AsyncClient,
+    auth_headers_with_db: dict[str, str],
+) -> None:
+    """POST /auth/logout with valid auth returns success."""
+    resp = await test_client.post(
+        "/api/auth/logout",
+        json={},
+        headers={**CSRF_HEADERS, **auth_headers_with_db},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["message"] == "Logged out successfully"
+
+
+@pytest.mark.asyncio
+async def test_logout_revoke_all_sessions(
+    test_client: AsyncClient,
+    auth_headers_with_db: dict[str, str],
+) -> None:
+    """POST /auth/logout with revoke_all_sessions returns success and message."""
+    resp = await test_client.post(
+        "/api/auth/logout",
+        json={"revoke_all_sessions": True},
+        headers={**CSRF_HEADERS, **auth_headers_with_db},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "message" in data
+    assert "Logged out" in data["message"]
+
+
+@pytest.mark.asyncio
+async def test_ws_token_returns_token_when_authenticated(
+    test_client: AsyncClient,
+    auth_headers_with_db: dict[str, str],
+) -> None:
+    """POST /auth/ws-token with valid auth returns short-lived token."""
+    resp = await test_client.post(
+        "/api/auth/ws-token",
+        headers={**CSRF_HEADERS, **auth_headers_with_db},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "token" in data
+    assert data["token"].startswith("wst_")
+    assert data["expires_in"] == 30
+
+
+@pytest.mark.asyncio
+async def test_ws_token_requires_authentication(test_client: AsyncClient) -> None:
+    """POST /auth/ws-token without auth returns 401."""
+    resp = await test_client.post(
+        "/api/auth/ws-token",
+        headers=CSRF_HEADERS,
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_password_change_success(
+    test_client: AsyncClient,
+    auth_headers_with_db: dict[str, str],
+) -> None:
+    """POST /auth/password/change with correct current password updates password."""
+    resp = await test_client.post(
+        "/api/auth/password/change",
+        json={
+            "current_password": "testpass123",
+            "new_password": "NewSecureP@ssw0rd!",
+        },
+        headers={**CSRF_HEADERS, **auth_headers_with_db},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "message" in data
+    assert "sessions_revoked" in data
+
+
+@pytest.mark.asyncio
+async def test_password_change_wrong_current_password(
+    test_client: AsyncClient,
+    auth_headers_with_db: dict[str, str],
+) -> None:
+    """POST /auth/password/change with wrong current password returns 401."""
+    resp = await test_client.post(
+        "/api/auth/password/change",
+        json={
+            "current_password": "wrongpassword",
+            "new_password": "NewSecureP@ssw0rd!",
+        },
+        headers={**CSRF_HEADERS, **auth_headers_with_db},
+    )
+    assert resp.status_code == 401
+    assert "incorrect" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_password_change_requires_authentication(test_client: AsyncClient) -> None:
+    """POST /auth/password/change without auth returns 401."""
+    resp = await test_client.post(
+        "/api/auth/password/change",
+        json={"current_password": "x", "new_password": "NewSecureP@ssw0rd!"},
+        headers=CSRF_HEADERS,
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_refresh_requires_token(test_client: AsyncClient) -> None:
+    """POST /auth/refresh without refresh token returns 401."""
+    resp = await test_client.post(
+        "/api/auth/refresh",
+        json={},
+        headers=CSRF_HEADERS,
+    )
+    assert resp.status_code == 401
+    assert "refresh" in resp.json()["detail"].lower() or "required" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_refresh_success_with_body_token(
+    test_client: AsyncClient,
+    test_user_with_db: User,
+) -> None:
+    """POST /auth/refresh with valid refresh token in body returns new tokens."""
+    # Login to get refresh token
+    login_resp = await test_client.post(
+        "/api/auth/login",
+        json={"email": test_user_with_db.email, "password": "testpass123"},
+        headers=CSRF_HEADERS,
+    )
+    assert login_resp.status_code == 200
+    login_data = login_resp.json()
+    refresh_token = login_data.get("refresh_token")
+    assert refresh_token, "Login should return refresh_token in body (dev mode)"
+
+    resp = await test_client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": refresh_token},
+        headers=CSRF_HEADERS,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "access_token" in data or "expires_in" in data
+
+
+@pytest.mark.asyncio
+async def test_password_forgot_returns_200_always(
+    test_client: AsyncClient,
+) -> None:
+    """POST /auth/password/forgot always returns 200 (no email enumeration)."""
+    resp = await test_client.post(
+        "/api/auth/password/forgot",
+        json={"email": "nonexistent@example.com"},
+        headers=CSRF_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert "message" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_password_reset_invalid_token_returns_400(test_client: AsyncClient) -> None:
+    """POST /auth/password/reset with invalid token returns 400."""
+    resp = await test_client.post(
+        "/api/auth/password/reset",
+        json={"token": "invalid-token-123", "new_password": "NewSecureP@ssw0rd!"},
+        headers=CSRF_HEADERS,
+    )
+    assert resp.status_code == 400
+    assert "token" in resp.json()["detail"].lower() or "invalid" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_password_reset_success_with_stored_token(
+    test_client: AsyncClient,
+    integration_db: AsyncSession,
+    test_user_with_db: User,
+    integration_redis,
+) -> None:
+    """POST /auth/password/reset with valid token in Redis updates password."""
+    import json
+
+    from src.routes.auth import PASSWORD_RESET_PREFIX, PASSWORD_RESET_TTL
+
+    reset_token = "valid-reset-token-for-test"
+    key = f"{PASSWORD_RESET_PREFIX}{reset_token}"
+    value = json.dumps({"user_id": test_user_with_db.id, "email": test_user_with_db.email})
+    await integration_redis.setex(key, PASSWORD_RESET_TTL, value)
+
+    resp = await test_client.post(
+        "/api/auth/password/reset",
+        json={"token": reset_token, "new_password": "NewSecureP@ssw0rd!WithLength"},
+        headers=CSRF_HEADERS,
+    )
+    assert resp.status_code == 200
+    assert "message" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_delete_account_requires_authentication(test_client: AsyncClient) -> None:
+    """DELETE /auth/account without auth returns 401."""
+    resp = await test_client.request(
+        "DELETE",
+        "/api/auth/account",
+        json={"password": "x", "confirmation": "x@x.com"},
+        headers=CSRF_HEADERS,
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_delete_account_wrong_confirmation(
+    test_client: AsyncClient,
+    auth_headers_with_db: dict[str, str],
+    test_user_with_db: User,
+) -> None:
+    """DELETE /auth/account with wrong email confirmation returns 400."""
+    resp = await test_client.request(
+        "DELETE",
+        "/api/auth/account",
+        json={
+            "password": "testpass123",
+            "confirmation": "wrong@example.com",
+        },
+        headers={**CSRF_HEADERS, **auth_headers_with_db},
+    )
+    assert resp.status_code == 400
+    assert "confirmation" in resp.json()["detail"].lower() or "match" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_delete_account_wrong_password(
+    test_client: AsyncClient,
+    auth_headers_with_db: dict[str, str],
+    test_user_with_db: User,
+) -> None:
+    """DELETE /auth/account with wrong password returns 401."""
+    resp = await test_client.request(
+        "DELETE",
+        "/api/auth/account",
+        json={
+            "password": "wrongpassword",
+            "confirmation": test_user_with_db.email,
+        },
+        headers={**CSRF_HEADERS, **auth_headers_with_db},
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_delete_account_success_soft_deletes(
+    test_client: AsyncClient,
+    auth_headers_with_db: dict[str, str],
+    test_user_with_db: User,
+    integration_db: AsyncSession,
+) -> None:
+    """DELETE /auth/account with correct password and confirmation soft-deletes user."""
+    resp = await test_client.request(
+        "DELETE",
+        "/api/auth/account",
+        json={
+            "password": "testpass123",
+            "confirmation": test_user_with_db.email,
+        },
+        headers={**CSRF_HEADERS, **auth_headers_with_db},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["message"] == "Account deleted successfully"
+
+    result = await integration_db.execute(select(User).where(User.id == test_user_with_db.id))
+    user_after = result.scalar_one_or_none()
+    assert user_after is not None
+    assert user_after.is_active is False
+    assert user_after.deleted_at is not None
