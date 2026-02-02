@@ -481,23 +481,17 @@ async def get_usage_analytics(
     )
     tokens_by_model = [{"model": row.model, "tokens": row.tokens} for row in tokens_by_model_result]
 
-    # Tokens by provider - derive from model name
+    # Tokens by provider - use provider field stored on usage record
     tokens_by_provider_result = await db.execute(
         select(
-            case(
-                (UsageRecord.model.like("claude%"), "anthropic"),
-                (UsageRecord.model.like("gpt%"), "openai"),
-                (UsageRecord.model.like("o1%"), "openai"),
-                (UsageRecord.model.like("amazon%"), "bedrock"),
-                else_="other",
-            ).label("provider"),
+            UsageRecord.provider.label("provider"),
             func.sum(UsageRecord.quantity).label("tokens"),
         )
         .select_from(UsageRecord)
         .where(UsageRecord.usage_type.in_(["tokens_input", "tokens_output"]))
         .where(UsageRecord.created_at >= start_date)
-        .where(UsageRecord.model.isnot(None))
-        .group_by("provider")
+        .where(UsageRecord.provider.isnot(None))
+        .group_by(UsageRecord.provider)
         .order_by(func.sum(UsageRecord.quantity).desc())
     )
     tokens_by_provider = [

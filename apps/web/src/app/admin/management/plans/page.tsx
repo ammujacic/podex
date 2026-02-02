@@ -155,6 +155,19 @@ function EditPlanModal({ plan, onClose, onSave }: EditPlanModalProps) {
     stripe_product_id: plan?.stripe_product_id || '',
     stripe_price_id_monthly: plan?.stripe_price_id_monthly || '',
     stripe_price_id_yearly: plan?.stripe_price_id_yearly || '',
+    // Display/UI settings
+    color: plan?.color || '',
+    icon: plan?.icon || '',
+    cta_text: plan?.cta_text || '',
+    highlight_features: plan?.highlight_features?.join(', ') || '',
+    // Session/workspace configuration
+    session_timeout_options:
+      plan?.session_timeout_options?.map((v) => (v === null ? 'null' : String(v))).join(', ') || '',
+    max_thinking_tokens: plan?.max_thinking_tokens || '',
+    workspace_cpu_limit: plan?.workspace_cpu_limit || '',
+    workspace_memory_limit: plan?.workspace_memory_limit || '',
+    workspace_disk_limit: plan?.workspace_disk_limit || '',
+    max_session_duration_minutes: plan?.max_session_duration_minutes || '',
   });
   const [saving, setSaving] = useState(false);
 
@@ -162,7 +175,45 @@ function EditPlanModal({ plan, onClose, onSave }: EditPlanModalProps) {
     e.preventDefault();
     setSaving(true);
     try {
-      await onSave(formData);
+      // Transform form data to API format
+      const apiData = {
+        ...formData,
+        // Convert string fields to proper types
+        color: formData.color || null,
+        icon: formData.icon || null,
+        cta_text: formData.cta_text || null,
+        highlight_features: formData.highlight_features
+          ? formData.highlight_features
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : null,
+        session_timeout_options: formData.session_timeout_options
+          ? formData.session_timeout_options
+              .split(',')
+              .map((s) => {
+                const trimmed = s.trim();
+                return trimmed === 'null' ? null : parseInt(trimmed, 10);
+              })
+              .filter((v) => v === null || !isNaN(v as number))
+          : null,
+        max_thinking_tokens: formData.max_thinking_tokens
+          ? Number(formData.max_thinking_tokens)
+          : null,
+        workspace_cpu_limit: formData.workspace_cpu_limit
+          ? Number(formData.workspace_cpu_limit)
+          : null,
+        workspace_memory_limit: formData.workspace_memory_limit
+          ? Number(formData.workspace_memory_limit)
+          : null,
+        workspace_disk_limit: formData.workspace_disk_limit
+          ? Number(formData.workspace_disk_limit)
+          : null,
+        max_session_duration_minutes: formData.max_session_duration_minutes
+          ? Number(formData.max_session_duration_minutes)
+          : null,
+      };
+      await onSave(apiData);
       onClose();
     } finally {
       setSaving(false);
@@ -413,6 +464,155 @@ function EditPlanModal({ plan, onClose, onSave }: EditPlanModalProps) {
               />
               <span className="text-sm text-text-secondary">Popular</span>
             </label>
+          </div>
+
+          {/* Display/UI Settings */}
+          <div className="space-y-4 pt-4 border-t border-border-subtle">
+            <h3 className="text-sm font-medium text-text-secondary">Display Settings</h3>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm text-text-muted mb-1">Color (hex)</label>
+                <input
+                  type="text"
+                  value={formData.color}
+                  onChange={(e) => setFormData({ ...formData, color: e.target.value })}
+                  placeholder="#22c55e"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-muted mb-1">Icon</label>
+                <input
+                  type="text"
+                  value={formData.icon}
+                  onChange={(e) => setFormData({ ...formData, icon: e.target.value })}
+                  placeholder="Zap, Crown, etc."
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-muted mb-1">CTA Text</label>
+                <input
+                  type="text"
+                  value={formData.cta_text}
+                  onChange={(e) => setFormData({ ...formData, cta_text: e.target.value })}
+                  placeholder="Get Started"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm text-text-muted mb-1">
+                Highlight Features (comma-separated)
+              </label>
+              <input
+                type="text"
+                value={formData.highlight_features}
+                onChange={(e) => setFormData({ ...formData, highlight_features: e.target.value })}
+                placeholder="Feature 1, Feature 2, Feature 3"
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+              />
+            </div>
+          </div>
+
+          {/* Session/Workspace Configuration */}
+          <div className="space-y-4 pt-4 border-t border-border-subtle">
+            <h3 className="text-sm font-medium text-text-secondary">
+              Session & Workspace Configuration
+            </h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Session Timeout Options (comma-separated, use null for unlimited)
+                </label>
+                <input
+                  type="text"
+                  value={formData.session_timeout_options}
+                  onChange={(e) =>
+                    setFormData({ ...formData, session_timeout_options: e.target.value })
+                  }
+                  placeholder="15, 30, 60, 120, null"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Max Session Duration (minutes)
+                </label>
+                <input
+                  type="number"
+                  value={formData.max_session_duration_minutes}
+                  onChange={(e) =>
+                    setFormData({ ...formData, max_session_duration_minutes: e.target.value })
+                  }
+                  placeholder="Leave empty for unlimited"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                  min={0}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-text-muted mb-1">Max Thinking Tokens</label>
+                <input
+                  type="number"
+                  value={formData.max_thinking_tokens}
+                  onChange={(e) =>
+                    setFormData({ ...formData, max_thinking_tokens: e.target.value })
+                  }
+                  placeholder="Leave empty for default"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                  min={0}
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Workspace CPU Limit (millicores)
+                </label>
+                <input
+                  type="number"
+                  value={formData.workspace_cpu_limit}
+                  onChange={(e) =>
+                    setFormData({ ...formData, workspace_cpu_limit: e.target.value })
+                  }
+                  placeholder="e.g., 2000 for 2 cores"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                  min={0}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Workspace Memory Limit (MB)
+                </label>
+                <input
+                  type="number"
+                  value={formData.workspace_memory_limit}
+                  onChange={(e) =>
+                    setFormData({ ...formData, workspace_memory_limit: e.target.value })
+                  }
+                  placeholder="e.g., 4096 for 4GB"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                  min={0}
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Workspace Disk Limit (GB)
+                </label>
+                <input
+                  type="number"
+                  value={formData.workspace_disk_limit}
+                  onChange={(e) =>
+                    setFormData({ ...formData, workspace_disk_limit: e.target.value })
+                  }
+                  placeholder="e.g., 20"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                  min={0}
+                />
+              </div>
+            </div>
           </div>
 
           {/* Actions */}

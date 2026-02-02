@@ -61,6 +61,12 @@ class CreateHardwareSpecRequest(BaseModel):
     is_available: bool = True
     requires_subscription: str | None = None  # Plan slug or None for free tier
 
+    # Additional fields
+    region_availability: list[str] | None = None
+    machine_type: str | None = None
+    cpu_millicores: int | None = None
+    sort_order: int = 0
+
 
 class UpdateHardwareSpecRequest(BaseModel):
     """Update hardware specification request."""
@@ -79,6 +85,11 @@ class UpdateHardwareSpecRequest(BaseModel):
     hourly_rate_cents: int | None = Field(default=None, ge=0)
     is_available: bool | None = None
     requires_subscription: str | None = None
+    # Additional fields
+    region_availability: list[str] | None = None
+    machine_type: str | None = None
+    cpu_millicores: int | None = None
+    sort_order: int | None = None
 
 
 class AdminHardwareSpecResponse(BaseModel):
@@ -101,6 +112,11 @@ class AdminHardwareSpecResponse(BaseModel):
     hourly_rate_cents: int
     is_available: bool
     requires_subscription: str | None
+    # Additional fields
+    region_availability: list[str] | None
+    machine_type: str | None
+    cpu_millicores: int | None
+    sort_order: int
     created_at: datetime
     updated_at: datetime
 
@@ -161,6 +177,10 @@ async def list_hardware_specs(
                 hourly_rate_cents=spec.hourly_rate_cents,
                 is_available=spec.is_available,
                 requires_subscription=spec.requires_subscription,
+                region_availability=spec.region_availability,
+                machine_type=spec.machine_type,
+                cpu_millicores=spec.cpu_millicores,
+                sort_order=spec.sort_order,
                 created_at=spec.created_at,
                 updated_at=spec.updated_at,
                 active_session_count=active_session_count,
@@ -205,6 +225,10 @@ async def create_hardware_spec(
         hourly_rate_cents=data.hourly_rate_cents,
         is_available=data.is_available,
         requires_subscription=data.requires_subscription,
+        region_availability=data.region_availability or [],
+        machine_type=data.machine_type,
+        cpu_millicores=data.cpu_millicores,
+        sort_order=data.sort_order,
     )
 
     db.add(spec)
@@ -231,6 +255,10 @@ async def create_hardware_spec(
         hourly_rate_cents=spec.hourly_rate_cents,
         is_available=spec.is_available,
         requires_subscription=spec.requires_subscription,
+        region_availability=spec.region_availability,
+        machine_type=spec.machine_type,
+        cpu_millicores=spec.cpu_millicores,
+        sort_order=spec.sort_order,
         created_at=spec.created_at,
         updated_at=spec.updated_at,
         active_session_count=0,
@@ -277,6 +305,10 @@ async def get_hardware_spec(
         hourly_rate_cents=spec.hourly_rate_cents,
         is_available=spec.is_available,
         requires_subscription=spec.requires_subscription,
+        region_availability=spec.region_availability,
+        machine_type=spec.machine_type,
+        cpu_millicores=spec.cpu_millicores,
+        sort_order=spec.sort_order,
         created_at=spec.created_at,
         updated_at=spec.updated_at,
         active_session_count=active_session_count,
@@ -318,7 +350,9 @@ async def update_hardware_spec(
         changes=list(update_data.keys()),
     )
 
-    return cast("AdminHardwareSpecResponse", await get_hardware_spec(spec_id, request, db))
+    return cast(
+        "AdminHardwareSpecResponse", await get_hardware_spec(spec_id, request, response, db)
+    )
 
 
 @router.delete("/{spec_id}")

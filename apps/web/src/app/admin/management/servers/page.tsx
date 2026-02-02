@@ -721,13 +721,17 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
     name: '',
     hostname: '',
     ip_address: '',
+    ssh_port: 22,
     docker_port: 2375,
+    docker_runtime: 'runsc',
     total_cpu: 4,
     total_memory_mb: 8192,
     total_disk_gb: 100,
     total_bandwidth_mbps: 1000,
     architecture: 'amd64',
     region: '',
+    provider: '',
+    labels: {},
     has_gpu: false,
     gpu_type: '',
     gpu_count: 0,
@@ -783,13 +787,17 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
         name: '',
         hostname: '',
         ip_address: '',
+        ssh_port: 22,
         docker_port: 2375,
+        docker_runtime: 'runsc',
         total_cpu: 4,
         total_memory_mb: 8192,
         total_disk_gb: 100,
         total_bandwidth_mbps: 1000,
         architecture: 'amd64',
         region: '',
+        provider: '',
+        labels: {},
         has_gpu: false,
         gpu_type: '',
         gpu_count: 0,
@@ -879,6 +887,20 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
               />
             </div>
             <div>
+              <label className="block text-sm text-text-secondary mb-1">SSH Port</label>
+              <input
+                type="number"
+                value={formData.ssh_port}
+                onChange={(e) => setFormData({ ...formData, ssh_port: parseInt(e.target.value) })}
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                min={1}
+                max={65535}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
               <label className="block text-sm text-text-secondary mb-1">Docker Port</label>
               <input
                 type="number"
@@ -888,6 +910,18 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
                 }
                 className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
               />
+            </div>
+            <div>
+              <label className="block text-sm text-text-secondary mb-1">Docker Runtime</label>
+              <select
+                value={formData.docker_runtime}
+                onChange={(e) => setFormData({ ...formData, docker_runtime: e.target.value })}
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+              >
+                <option value="runsc">runsc (gVisor)</option>
+                <option value="runc">runc (default)</option>
+                <option value="nvidia">nvidia (GPU)</option>
+              </select>
             </div>
           </div>
 
@@ -968,6 +1002,17 @@ function AddServerModal({ isOpen, onClose, onSubmit }: AddServerModalProps) {
                 placeholder="eu / us"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm text-text-secondary mb-1">Provider</label>
+            <input
+              type="text"
+              value={formData.provider || ''}
+              onChange={(e) => setFormData({ ...formData, provider: e.target.value })}
+              className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+              placeholder="gcp / aws / hetzner / local"
+            />
           </div>
 
           <div>
@@ -1246,8 +1291,11 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
     name: '',
     hostname: '',
     ip_address: '',
+    ssh_port: 22,
     docker_port: 2376,
+    docker_runtime: 'runsc',
     region: '',
+    provider: '',
     max_workspaces: 50,
     tls_enabled: true,
     tls_cert_path: '',
@@ -1270,8 +1318,11 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
         name: server.name,
         hostname: server.hostname,
         ip_address: server.ip_address,
+        ssh_port: server.ssh_port || 22,
         docker_port: server.docker_port,
+        docker_runtime: server.docker_runtime || 'runsc',
         region: server.region || '',
+        provider: server.provider || '',
         max_workspaces: server.max_workspaces,
         tls_enabled: server.tls_enabled,
         tls_cert_path: server.tls_cert_path || '',
@@ -1296,8 +1347,11 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
         name: formData.name,
         hostname: formData.hostname,
         ip_address: formData.ip_address,
+        ssh_port: formData.ssh_port,
         docker_port: formData.docker_port,
+        docker_runtime: formData.docker_runtime,
         region: formData.region || null,
+        provider: formData.provider || null,
         max_workspaces: formData.max_workspaces,
         tls_enabled: formData.tls_enabled,
         tls_cert_path: formData.tls_cert_path || null,
@@ -1416,6 +1470,20 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
               />
             </div>
             <div>
+              <label className="block text-sm text-text-secondary mb-1">SSH Port</label>
+              <input
+                type="number"
+                value={formData.ssh_port}
+                onChange={(e) => setFormData({ ...formData, ssh_port: parseInt(e.target.value) })}
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                min={1}
+                max={65535}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
               <label className="block text-sm text-text-secondary mb-1">Docker Port</label>
               <input
                 type="number"
@@ -1426,6 +1494,18 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
                 className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
                 required
               />
+            </div>
+            <div>
+              <label className="block text-sm text-text-secondary mb-1">Docker Runtime</label>
+              <select
+                value={formData.docker_runtime}
+                onChange={(e) => setFormData({ ...formData, docker_runtime: e.target.value })}
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+              >
+                <option value="runsc">runsc (gVisor)</option>
+                <option value="runc">runc (default)</option>
+                <option value="nvidia">nvidia (GPU)</option>
+              </select>
             </div>
           </div>
 
@@ -1452,6 +1532,17 @@ function EditServerModal({ server, onClose, onSubmit }: EditServerModalProps) {
                 placeholder="eu / us"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm text-text-secondary mb-1">Provider</label>
+            <input
+              type="text"
+              value={formData.provider}
+              onChange={(e) => setFormData({ ...formData, provider: e.target.value })}
+              className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+              placeholder="gcp / aws / hetzner / local"
+            />
           </div>
 
           <div>

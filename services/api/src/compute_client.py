@@ -650,7 +650,7 @@ class ComputeClient:
             user_id=user_id,
             params={"path": path},
         )
-        return result if result else []
+        return result or []
 
     async def read_file(
         self,

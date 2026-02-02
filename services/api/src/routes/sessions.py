@@ -57,6 +57,7 @@ from src.services.org_limits import (
     InstanceTypeAccessDeniedError,
     LimitExceededError,
     OrgLimitsService,
+    SessionLimitExceededError,
 )
 from src.services.workspace_router import workspace_router
 
@@ -603,6 +604,8 @@ async def create_session(
             # Check spending limits
             limits_service = OrgLimitsService(db)
             await limits_service.check_spending_limit(member, org, additional_cents=0)
+            # Check session concurrency limit
+            await limits_service.check_session_concurrency(member, org)
             # Check instance type access if tier specified
             if data.tier:
                 await limits_service.check_instance_type_access(member, org, data.tier)
@@ -615,6 +618,16 @@ async def create_session(
                         "You have reached your organization spending limit. "
                         "Please contact your organization admin."
                     ),
+                },
+            )
+        except SessionLimitExceededError as e:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "session_limit_exceeded",
+                    "message": str(e),
+                    "current": e.current,
+                    "limit": e.limit,
                 },
             )
         except InstanceTypeAccessDeniedError as e:
@@ -655,7 +668,7 @@ async def create_session(
     # Create workspace first (with local_pod_id if using local pod)
     workspace = WorkspaceModel(
         status="pending",
-        local_pod_id=data.local_pod_id if data.local_pod_id else None,
+        local_pod_id=data.local_pod_id or None,
         region_preference=data.region_preference if not data.local_pod_id else None,
     )
     db.add(workspace)
@@ -679,7 +692,7 @@ async def create_session(
             branch=data.branch,
             template_id=data.template_id,
             status="active",
-            settings=settings if settings else None,
+            settings=settings or None,
         )
         db.add(session)
         await db.commit()
@@ -1596,7 +1609,7 @@ def validate_file_path(path: str, max_length: int = 4096, allow_absolute: bool =
 
 def get_language_from_path(path: str) -> str:
     """Determine language from file extension."""
-    extension = path.split(".")[-1].lower() if "." in path else ""
+    extension = path.rsplit(".", maxsplit=1)[-1].lower() if "." in path else ""
     language_map = {
         "tsx": "typescript",
         "ts": "typescript",

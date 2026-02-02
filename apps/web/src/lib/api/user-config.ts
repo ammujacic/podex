@@ -10,13 +10,10 @@ interface UserConfig {
   id: string;
   user_id: string;
   default_shell: string;
-  default_editor: string;
   git_name: string | null;
   git_email: string | null;
   default_template_id: string | null;
   theme: string;
-  editor_theme: string;
-  default_standby_timeout_minutes: number | null;
   custom_keybindings: Record<string, any> | null;
   editor_settings: Record<string, any> | null;
   ui_preferences: Record<string, any> | null;
@@ -26,13 +23,10 @@ interface UserConfig {
 
 interface UpdateUserConfigRequest {
   default_shell?: string;
-  default_editor?: string;
   git_name?: string | null;
   git_email?: string | null;
   default_template_id?: string | null;
   theme?: string;
-  editor_theme?: string;
-  default_standby_timeout_minutes?: number | null;
   custom_keybindings?: Record<string, any> | null;
   editor_settings?: Record<string, any> | null;
   ui_preferences?: Record<string, any> | null;

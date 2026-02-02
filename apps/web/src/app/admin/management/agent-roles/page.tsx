@@ -219,6 +219,12 @@ interface AgentRoleConfig {
   description?: string;
   system_prompt: string;
   tools: string[];
+  category?: string;
+  gradient_start?: string;
+  gradient_end?: string;
+  features?: string[];
+  example_prompts?: string[];
+  requires_subscription?: boolean;
   sort_order: number;
   is_enabled: boolean;
   is_system: boolean;
@@ -249,7 +255,14 @@ interface CreateRoleForm {
   description: string;
   system_prompt: string;
   tools: string[];
+  category: string;
+  gradient_start: string;
+  gradient_end: string;
+  features: string; // JSON string
+  example_prompts: string; // JSON string
+  requires_subscription: boolean;
   sort_order: number;
+  is_enabled: boolean;
 }
 
 const defaultForm: CreateRoleForm = {
@@ -260,7 +273,14 @@ const defaultForm: CreateRoleForm = {
   description: '',
   system_prompt: '',
   tools: [],
+  category: 'general',
+  gradient_start: '',
+  gradient_end: '',
+  features: '[]',
+  example_prompts: '[]',
+  requires_subscription: false,
   sort_order: 100,
+  is_enabled: true,
 };
 
 const colorOptions = [
@@ -313,7 +333,24 @@ export default function AgentRolesAdminPage() {
     setError(null);
 
     try {
-      await api.post('/api/admin/agents', formData);
+      // Parse JSON fields
+      let parsedFeatures: string[] = [];
+      let parsedExamplePrompts: string[] = [];
+      try {
+        parsedFeatures = JSON.parse(formData.features);
+      } catch {
+        parsedFeatures = [];
+      }
+      try {
+        parsedExamplePrompts = JSON.parse(formData.example_prompts);
+      } catch {
+        parsedExamplePrompts = [];
+      }
+      await api.post('/api/admin/agents', {
+        ...formData,
+        features: parsedFeatures,
+        example_prompts: parsedExamplePrompts,
+      });
       await loadData();
       setShowCreateForm(false);
       setFormData(defaultForm);
@@ -331,7 +368,24 @@ export default function AgentRolesAdminPage() {
     setError(null);
 
     try {
-      await api.put(`/api/admin/agents/${roleId}`, formData);
+      // Parse JSON fields
+      let parsedFeatures: string[] = [];
+      let parsedExamplePrompts: string[] = [];
+      try {
+        parsedFeatures = JSON.parse(formData.features);
+      } catch {
+        parsedFeatures = [];
+      }
+      try {
+        parsedExamplePrompts = JSON.parse(formData.example_prompts);
+      } catch {
+        parsedExamplePrompts = [];
+      }
+      await api.put(`/api/admin/agents/${roleId}`, {
+        ...formData,
+        features: parsedFeatures,
+        example_prompts: parsedExamplePrompts,
+      });
       await loadData();
       setEditingRole(null);
       setFormData(defaultForm);
@@ -374,7 +428,14 @@ export default function AgentRolesAdminPage() {
       description: role.description || '',
       system_prompt: role.system_prompt,
       tools: role.tools,
+      category: role.category || 'general',
+      gradient_start: role.gradient_start || '',
+      gradient_end: role.gradient_end || '',
+      features: JSON.stringify(role.features || [], null, 2),
+      example_prompts: JSON.stringify(role.example_prompts || [], null, 2),
+      requires_subscription: role.requires_subscription || false,
       sort_order: role.sort_order,
+      is_enabled: role.is_enabled,
     });
   };
 
@@ -808,6 +869,114 @@ export default function AgentRolesAdminPage() {
                     className="w-full px-3 py-2 border border-border-subtle rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
                     placeholder="You are an expert..."
                   />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-text-primary mb-1">
+                    Category
+                  </label>
+                  <select
+                    value={formData.category}
+                    onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                    className="w-full px-3 py-2 border border-border-subtle rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="general">General</option>
+                    <option value="development">Development</option>
+                    <option value="analysis">Analysis</option>
+                    <option value="creative">Creative</option>
+                    <option value="research">Research</option>
+                    <option value="operations">Operations</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-text-primary mb-1">
+                    Sort Order
+                  </label>
+                  <input
+                    type="number"
+                    value={formData.sort_order}
+                    onChange={(e) =>
+                      setFormData({ ...formData, sort_order: parseInt(e.target.value) || 0 })
+                    }
+                    className="w-full px-3 py-2 border border-border-subtle rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    min={0}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-text-primary mb-1">
+                    Gradient Start (hex)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.gradient_start}
+                    onChange={(e) => setFormData({ ...formData, gradient_start: e.target.value })}
+                    className="w-full px-3 py-2 border border-border-subtle rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="#a855f7"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-text-primary mb-1">
+                    Gradient End (hex)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.gradient_end}
+                    onChange={(e) => setFormData({ ...formData, gradient_end: e.target.value })}
+                    className="w-full px-3 py-2 border border-border-subtle rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="#6366f1"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-text-primary mb-1">
+                    Features (JSON array)
+                  </label>
+                  <textarea
+                    value={formData.features}
+                    onChange={(e) => setFormData({ ...formData, features: e.target.value })}
+                    rows={3}
+                    className="w-full px-3 py-2 border border-border-subtle rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
+                    placeholder='["Feature 1", "Feature 2"]'
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-text-primary mb-1">
+                    Example Prompts (JSON array)
+                  </label>
+                  <textarea
+                    value={formData.example_prompts}
+                    onChange={(e) => setFormData({ ...formData, example_prompts: e.target.value })}
+                    rows={3}
+                    className="w-full px-3 py-2 border border-border-subtle rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
+                    placeholder='["How do I...", "Can you help with..."]'
+                  />
+                </div>
+
+                <div className="md:col-span-2 flex flex-wrap gap-6">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={formData.is_enabled}
+                      onChange={(e) => setFormData({ ...formData, is_enabled: e.target.checked })}
+                      className="rounded border-border-subtle"
+                    />
+                    <span className="text-sm text-text-secondary">Enabled</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={formData.requires_subscription}
+                      onChange={(e) =>
+                        setFormData({ ...formData, requires_subscription: e.target.checked })
+                      }
+                      className="rounded border-border-subtle"
+                    />
+                    <span className="text-sm text-text-secondary">Requires Subscription</span>
+                  </label>
                 </div>
               </div>
 

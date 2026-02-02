@@ -1396,9 +1396,9 @@ describe('uiStore', () => {
   describe('Server Sync', () => {
     describe('loadFromServer', () => {
       it('loads preferences from server', async () => {
+        // Note: theme is now handled separately by ThemeManager, not ui_preferences
         mockedGetUserConfig.mockResolvedValue({
           ui_preferences: {
-            theme: 'light',
             terminalHeight: 350,
             showHiddenFiles: true,
           },
@@ -1410,7 +1410,6 @@ describe('uiStore', () => {
           await result.current.loadFromServer();
         });
 
-        expect(result.current.theme).toBe('light');
         expect(result.current.terminalHeight).toBe(350);
         expect(result.current.showHiddenFiles).toBe(true);
       });
@@ -1466,10 +1465,11 @@ describe('uiStore', () => {
 
     describe('syncToServer', () => {
       it('syncs preferences to server when authenticated', async () => {
+        // Note: theme is now handled separately by ThemeManager, not ui_preferences
         const { result } = renderHook(() => useUIStore());
 
         act(() => {
-          result.current.setTheme('light');
+          result.current.setTerminalHeight(400);
         });
 
         await act(async () => {
@@ -1478,7 +1478,7 @@ describe('uiStore', () => {
 
         expect(mockedUpdateUserConfig).toHaveBeenCalledWith({
           ui_preferences: expect.objectContaining({
-            theme: 'light',
+            terminalHeight: 400,
           }),
         });
       });

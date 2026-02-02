@@ -69,6 +69,7 @@ class CreateAgentToolRequest(BaseModel):
     parameters: dict[str, Any] = Field(...)
     category: str = Field(default="custom", max_length=50)
     sort_order: int = Field(default=500, ge=0)
+    is_enabled: bool = Field(default=True)
     # Permission flags - defaults to read-only (safest option)
     is_read_operation: bool = Field(default=True)
     is_write_operation: bool = Field(default=False)
@@ -251,7 +252,7 @@ async def create_tool(
         parameters=data.parameters,
         category=data.category,
         sort_order=data.sort_order,
-        is_enabled=True,
+        is_enabled=data.is_enabled,
         is_system=False,  # Custom tools can be deleted
         # Permission flags for mode-based access control
         is_read_operation=data.is_read_operation,

@@ -22,7 +22,7 @@ from src.database.conversation import (
 from src.mcp.integration import get_mcp_tools_as_agent_tools
 from src.mcp.registry import MCPToolRegistry
 from src.mode_detection import IntentDetector
-from src.providers.llm import CompletionRequest
+from src.providers.llm import CompletionRequest, determine_usage_source
 from src.streaming import get_stream_publisher
 from src.tools.executor import ToolExecutor
 from src.tools.memory_tools import get_knowledge_base, get_retriever
@@ -953,15 +953,9 @@ Use this context to provide more personalized and consistent responses.
                 tracker = get_usage_tracker()
                 if tracker:
                     try:
-                        # Use model_provider from API (required, no fallback).
-                        # vertex = included, ollama/lmstudio = local, anthropic/openai = external
+                        # Use consolidated usage source classification from llm.py
                         provider = self.model_provider or "unknown"
-                        if provider in ("ollama", "lmstudio"):
-                            usage_source = "local"
-                        elif provider == "vertex":
-                            usage_source = "included"
-                        else:
-                            usage_source = "external"
+                        usage_source = determine_usage_source(provider)
 
                         params = TokenUsageParams(
                             user_id=self.user_id,
@@ -970,10 +964,17 @@ Use this context to provide more personalized and consistent responses.
                             output_tokens=output_tokens,
                             session_id=self.session_id,
                             agent_id=self.agent_id,
-                            metadata={"streaming": False},
+                            metadata={"streaming": False, "provider": provider},
                             usage_source=usage_source,
                         )
                         await tracker.record_token_usage(params)
+                        logger.info(
+                            "Tracked non-streaming usage",
+                            provider=provider,
+                            usage_source=usage_source,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                        )
                     except Exception:
                         logger.exception("Failed to track non-streaming usage")
 
@@ -1244,26 +1245,34 @@ Use this context to provide more personalized and consistent responses.
 
                 elif event.type == "done":
                     # Capture usage stats
+                    provider = self.model_provider or "unknown"
                     if event.usage:
                         tokens_used = event.usage.get("total_tokens", 0)
                         input_tokens = event.usage.get("input_tokens", 0)
                         output_tokens = event.usage.get("output_tokens", 0)
+                        logger.debug(
+                            "Received usage in done event",
+                            provider=provider,
+                            model=self.model,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            raw_usage=event.usage,
+                        )
+                    else:
+                        logger.warning(
+                            "No usage data in done event - billing will not be tracked",
+                            provider=provider,
+                            model=self.model,
+                            event_usage=event.usage,
+                        )
 
                     # Track usage for billing (works for all providers including local)
                     if self.user_id and (input_tokens > 0 or output_tokens > 0):
                         tracker = get_usage_tracker()
                         if tracker:
                             try:
-                                # Use model_provider from API (required, no fallback).
-                                # vertex = included, ollama/lmstudio = local,
-                                # anthropic/openai = external
-                                provider = self.model_provider or "unknown"
-                                if provider in ("ollama", "lmstudio"):
-                                    usage_source = "local"
-                                elif provider == "vertex":
-                                    usage_source = "included"
-                                else:
-                                    usage_source = "external"
+                                # Use consolidated usage source classification from llm.py
+                                usage_source = determine_usage_source(provider)
 
                                 params = TokenUsageParams(
                                     user_id=self.user_id,
@@ -1272,12 +1281,32 @@ Use this context to provide more personalized and consistent responses.
                                     output_tokens=output_tokens,
                                     session_id=self.session_id,
                                     agent_id=self.agent_id,
-                                    metadata={"streaming": True},
+                                    metadata={"streaming": True, "provider": provider},
                                     usage_source=usage_source,
                                 )
                                 await tracker.record_token_usage(params)
+                                logger.info(
+                                    "Tracked streaming usage",
+                                    provider=provider,
+                                    usage_source=usage_source,
+                                    input_tokens=input_tokens,
+                                    output_tokens=output_tokens,
+                                )
                             except Exception:
                                 logger.exception("Failed to track streaming usage")
+                        else:
+                            logger.warning(
+                                "Usage tracker not available - billing will not be tracked",
+                                provider=provider,
+                            )
+                    elif self.user_id:
+                        logger.warning(
+                            "Zero tokens reported - billing will not be tracked",
+                            provider=provider,
+                            model=self.model,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                        )
 
                 elif event.type == "error":
                     # Emit error and raise

@@ -431,7 +431,7 @@ async def create_change_set(
     # Create change set in database
     cs = PendingChangeSet(
         session_id=session_id,
-        agent_id=body.agent_id if body.agent_id else None,
+        agent_id=body.agent_id or None,
         agent_name=body.agent_name,
         description=body.description,
         status="pending",

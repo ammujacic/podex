@@ -42,9 +42,10 @@ interface AgentTool {
 interface CreateToolForm {
   name: string;
   description: string;
-  parameters: Record<string, unknown>;
+  parameters: string; // JSON string
   category: string;
   sort_order: number;
+  is_enabled: boolean;
   is_read_operation: boolean;
   is_write_operation: boolean;
   is_command_operation: boolean;
@@ -54,9 +55,10 @@ interface CreateToolForm {
 const defaultForm: CreateToolForm = {
   name: '',
   description: '',
-  parameters: { type: 'object', properties: {}, required: [] },
+  parameters: JSON.stringify({ type: 'object', properties: {}, required: [] }, null, 2),
   category: 'custom',
   sort_order: 500,
+  is_enabled: true,
   is_read_operation: true,
   is_write_operation: false,
   is_command_operation: false,
@@ -149,7 +151,16 @@ export default function ToolsAdminPage() {
     setError(null);
 
     try {
-      await api.post('/api/admin/tools', formData);
+      let parsedParameters: Record<string, unknown> = {};
+      try {
+        parsedParameters = JSON.parse(formData.parameters);
+      } catch {
+        parsedParameters = { type: 'object', properties: {}, required: [] };
+      }
+      await api.post('/api/admin/tools', {
+        ...formData,
+        parameters: parsedParameters,
+      });
       await loadData();
       setShowCreateForm(false);
       setFormData(defaultForm);
@@ -167,7 +178,16 @@ export default function ToolsAdminPage() {
     setError(null);
 
     try {
-      await api.put(`/api/admin/tools/${toolId}`, formData);
+      let parsedParameters: Record<string, unknown> = {};
+      try {
+        parsedParameters = JSON.parse(formData.parameters);
+      } catch {
+        parsedParameters = { type: 'object', properties: {}, required: [] };
+      }
+      await api.put(`/api/admin/tools/${toolId}`, {
+        ...formData,
+        parameters: parsedParameters,
+      });
       await loadData();
       setEditingTool(null);
       setFormData(defaultForm);
@@ -205,9 +225,10 @@ export default function ToolsAdminPage() {
     setFormData({
       name: tool.name,
       description: tool.description,
-      parameters: tool.parameters,
+      parameters: JSON.stringify(tool.parameters, null, 2),
       category: tool.category,
       sort_order: tool.sort_order,
+      is_enabled: tool.is_enabled,
       is_read_operation: tool.is_read_operation,
       is_write_operation: tool.is_write_operation,
       is_command_operation: tool.is_command_operation,
@@ -420,6 +441,32 @@ export default function ToolsAdminPage() {
                 }
                 className="w-full px-3 py-2 border border-border-subtle rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-text-primary mb-1">
+                Parameters (JSON Schema)
+              </label>
+              <textarea
+                value={formData.parameters}
+                onChange={(e) => setFormData({ ...formData, parameters: e.target.value })}
+                rows={6}
+                className="w-full px-3 py-2 border border-border-subtle rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
+                placeholder='{"type": "object", "properties": {}, "required": []}'
+              />
+              <p className="text-xs text-text-muted mt-1">JSON Schema for tool parameters</p>
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={formData.is_enabled}
+                  onChange={(e) => setFormData({ ...formData, is_enabled: e.target.checked })}
+                  className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="text-sm text-text-secondary">Enabled</span>
+              </label>
             </div>
           </div>
 

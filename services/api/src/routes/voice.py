@@ -1363,7 +1363,7 @@ async def list_local_voices(
             LocalVoiceInfo(
                 id=voice.id,
                 name=voice.name,
-                languages=voice.languages if voice.languages else [],
+                languages=voice.languages or [],
                 gender=getattr(voice, "gender", None),
             )
             for voice in voices

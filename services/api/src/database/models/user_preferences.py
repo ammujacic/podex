@@ -28,9 +28,17 @@ class UserConfig(Base):
         unique=True,
     )
 
-    # Default shell and editor
+    # Default shell
     default_shell: Mapped[str] = mapped_column(String(50), default="zsh")
-    default_editor: Mapped[str] = mapped_column(String(50), default="vscode")
+
+    # Default editor (vscode, vim, nano, etc.)
+    default_editor: Mapped[str | None] = mapped_column(String(50))
+
+    # Editor theme preference (separate from UI theme)
+    editor_theme: Mapped[str | None] = mapped_column(String(50))
+
+    # Default standby timeout for workspaces in minutes (None = never)
+    default_standby_timeout_minutes: Mapped[int | None] = mapped_column(Integer, default=60)
 
     # Git configuration (synced to workspaces)
     git_name: Mapped[str | None] = mapped_column(String(255))
@@ -42,17 +50,11 @@ class UserConfig(Base):
         ForeignKey("pod_templates.id", ondelete="SET NULL"),
     )
 
-    # Theme preferences
-    theme: Mapped[str] = mapped_column(String(50), default="dark")
-    editor_theme: Mapped[str] = mapped_column(String(100), default="vs-dark")
+    # Theme preference (theme ID like "podex", "dracula", "github-light", etc.)
+    theme: Mapped[str] = mapped_column(String(50), default="podex")
 
     # Completed onboarding tours (for cross-device persistence)
     completed_tours: Mapped[list[str] | None] = mapped_column(JSONB, default=list)
-
-    # Pod standby configuration (None = Never auto-standby)
-    default_standby_timeout_minutes: Mapped[int | None] = mapped_column(
-        Integer, default=60, nullable=True
-    )
 
     # User preferences - synced across devices
     custom_keybindings: Mapped[dict[str, Any] | None] = mapped_column(

@@ -170,6 +170,18 @@ export interface AdminPlan {
   stripe_price_id_monthly: string | null;
   stripe_price_id_yearly: string | null;
   stripe_product_id: string | null;
+  // Display/UI settings
+  color: string | null;
+  icon: string | null;
+  cta_text: string | null;
+  highlight_features: string[] | null;
+  // Session/workspace configuration
+  session_timeout_options: (number | null)[] | null;
+  max_thinking_tokens: number | null;
+  workspace_cpu_limit: number | null;
+  workspace_memory_limit: number | null;
+  workspace_disk_limit: number | null;
+  max_session_duration_minutes: number | null;
   created_at: string;
   updated_at: string;
   subscriber_count: number;
@@ -186,11 +198,17 @@ export interface AdminHardwareSpec {
   gpu_type: string | null;
   gpu_memory_gb: number | null;
   gpu_count: number;
+  is_gpu: boolean;
+  requires_gke: boolean;
   storage_gb: number;
   bandwidth_mbps: number | null;
   hourly_rate_cents: number;
   is_available: boolean;
   requires_subscription: string | null;
+  region_availability: string[] | null;
+  machine_type: string | null;
+  cpu_millicores: number | null;
+  sort_order: number;
   created_at: string;
   updated_at: string;
   active_session_count: number;
@@ -256,7 +274,9 @@ export interface AdminWorkspaceServer {
   name: string;
   hostname: string;
   ip_address: string;
+  ssh_port: number;
   docker_port: number;
+  docker_runtime: string;
   status: 'active' | 'draining' | 'maintenance' | 'offline' | 'error';
   total_cpu: number;
   total_memory_mb: number;
@@ -274,6 +294,7 @@ export interface AdminWorkspaceServer {
   max_workspaces: number;
   architecture: string;
   region: string | null;
+  provider: string | null;
   labels: Record<string, string>;
   has_gpu: boolean;
   gpu_type: string | null;
@@ -324,13 +345,16 @@ export interface CreateServerRequest {
   name: string;
   hostname: string;
   ip_address: string;
+  ssh_port?: number;
   docker_port?: number;
+  docker_runtime?: string;
   total_cpu: number;
   total_memory_mb: number;
   total_disk_gb: number;
   total_bandwidth_mbps?: number;
   architecture?: string;
   region?: string;
+  provider?: string;
   labels?: Record<string, string>;
   has_gpu?: boolean;
   gpu_type?: string;

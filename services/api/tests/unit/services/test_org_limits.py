@@ -21,7 +21,12 @@ from src.services.org_limits import (
 @pytest.fixture
 def mock_db():
     """Mock database session."""
-    return AsyncMock()
+    db = AsyncMock()
+    # Mock the execute().scalar_one_or_none() chain for subscription query
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None  # No subscription by default
+    db.execute.return_value = mock_result
+    return db
 
 
 @pytest.fixture

@@ -14,7 +14,7 @@ Supports three credit models:
 """
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -22,11 +22,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.models import (
+    Agent,
     Organization,
     OrganizationCreditTransaction,
+    OrganizationInvoice,
     OrganizationMember,
+    OrganizationSubscription,
     OrganizationUsageRecord,
     Session,
+    SubscriptionPlan,
     User,
 )
 
@@ -80,6 +84,36 @@ class FeatureAccessDeniedError(Exception):
     def __init__(self, feature: str) -> None:
         self.feature = feature
         super().__init__(f"Access to feature '{feature}' is not allowed")
+
+
+class SessionLimitExceededError(Exception):
+    """Raised when user exceeds concurrent session limit."""
+
+    def __init__(self, current: int, limit: int) -> None:
+        self.current = current
+        self.limit = limit
+        super().__init__(f"Session limit exceeded: {current}/{limit} concurrent sessions")
+
+
+class AgentLimitExceededError(Exception):
+    """Raised when user exceeds agent count limit."""
+
+    def __init__(self, current: int, limit: int) -> None:
+        self.current = current
+        self.limit = limit
+        super().__init__(f"Agent limit exceeded: {current}/{limit} agents")
+
+
+class SeatLimitExceededError(Exception):
+    """Raised when organization has no available seats."""
+
+    def __init__(self, current_members: int, max_seats: int) -> None:
+        self.current_members = current_members
+        self.max_seats = max_seats
+        super().__init__(
+            f"No seats available: {current_members}/{max_seats} seats used. "
+            "Contact your organization admin to purchase additional seats."
+        )
 
 
 @dataclass
@@ -189,6 +223,24 @@ class OrgLimitsService:
         Raises:
             LimitExceededError: If spending would exceed limit
         """
+        # Check org subscription status - block if unpaid/canceled
+        sub_result = await self.db.execute(
+            select(OrganizationSubscription)
+            .where(OrganizationSubscription.organization_id == org.id)
+            .order_by(OrganizationSubscription.created_at.desc())
+            .limit(1)
+        )
+        subscription = sub_result.scalar_one_or_none()
+
+        if subscription and subscription.status in ("unpaid", "canceled"):
+            raise LimitExceededError(
+                "subscription_inactive",
+                0,
+                0,
+                "Organization subscription is inactive due to unpaid invoice. "
+                "Please contact your organization admin to update payment method.",
+            )
+
         if member.is_blocked:
             raise LimitExceededError(
                 "blocked",
@@ -332,6 +384,151 @@ class OrgLimitsService:
             raise FeatureAccessDeniedError(feature)
 
         return True
+
+    async def check_session_concurrency(
+        self,
+        member: OrganizationMember,
+        org: Organization,
+    ) -> bool:
+        """Check if user can create a new session (concurrent session limit).
+
+        Args:
+            member: Organization member
+            org: Organization
+
+        Returns:
+            True if session creation is allowed
+
+        Raises:
+            SessionLimitExceededError: If session limit would be exceeded
+        """
+        from sqlalchemy import func as sqlfunc  # noqa: PLC0415
+
+        # Get org subscription and plan limits
+        sub_result = await self.db.execute(
+            select(OrganizationSubscription)
+            .where(OrganizationSubscription.organization_id == org.id)
+            .where(OrganizationSubscription.status.in_(["active", "trialing"]))
+        )
+        subscription = sub_result.scalar_one_or_none()
+
+        if not subscription:
+            # No subscription, allow default 3 sessions
+            max_sessions = 3
+        else:
+            plan_result = await self.db.execute(
+                select(SubscriptionPlan).where(SubscriptionPlan.id == subscription.plan_id)
+            )
+            plan = plan_result.scalar_one_or_none()
+            max_sessions = plan.max_sessions if plan else 3
+
+        # Count active sessions for this user
+        active_sessions = await self.db.execute(
+            select(sqlfunc.count(Session.id))
+            .where(Session.owner_id == member.user_id)
+            .where(Session.status.in_(["running", "starting", "provisioning"]))
+        )
+        current_count = active_sessions.scalar() or 0
+
+        if current_count >= max_sessions:
+            raise SessionLimitExceededError(current_count, max_sessions)
+
+        return True
+
+    async def check_agent_count(
+        self,
+        member: OrganizationMember,
+        org: Organization,
+    ) -> bool:
+        """Check if user can create a new agent (agent count limit).
+
+        Args:
+            member: Organization member
+            org: Organization
+
+        Returns:
+            True if agent creation is allowed
+
+        Raises:
+            AgentLimitExceededError: If agent limit would be exceeded
+        """
+        from sqlalchemy import func as sqlfunc  # noqa: PLC0415
+
+        # Get org subscription and plan limits
+        sub_result = await self.db.execute(
+            select(OrganizationSubscription)
+            .where(OrganizationSubscription.organization_id == org.id)
+            .where(OrganizationSubscription.status.in_(["active", "trialing"]))
+        )
+        subscription = sub_result.scalar_one_or_none()
+
+        if not subscription:
+            # No subscription, allow default 2 agents
+            max_agents = 2
+        else:
+            plan_result = await self.db.execute(
+                select(SubscriptionPlan).where(SubscriptionPlan.id == subscription.plan_id)
+            )
+            plan = plan_result.scalar_one_or_none()
+            max_agents = plan.max_agents if plan else 2
+
+        # Count agents for this user (agents belong to sessions owned by the user)
+        agent_count = await self.db.execute(
+            select(sqlfunc.count(Agent.id))
+            .join(Session, Agent.session_id == Session.id)
+            .where(Session.owner_id == member.user_id)
+            .where(Agent.status.notin_(["terminated", "failed"]))
+        )
+        current_count = agent_count.scalar() or 0
+
+        if current_count >= max_agents:
+            raise AgentLimitExceededError(current_count, max_agents)
+
+        return True
+
+    async def check_seat_availability(
+        self,
+        org: Organization,
+    ) -> tuple[bool, int, int]:
+        """Check if organization has available seats for new members.
+
+        Args:
+            org: Organization
+
+        Returns:
+            Tuple of (has_availability, current_members, max_seats)
+
+        Raises:
+            SeatLimitExceededError: If no seats available
+        """
+        from sqlalchemy import func as sqlfunc  # noqa: PLC0415
+
+        # Get org subscription for seat count
+        sub_result = await self.db.execute(
+            select(OrganizationSubscription)
+            .where(OrganizationSubscription.organization_id == org.id)
+            .where(OrganizationSubscription.status.in_(["active", "trialing"]))
+        )
+        subscription = sub_result.scalar_one_or_none()
+
+        if not subscription:
+            # No subscription - allow unlimited members (free tier or legacy)
+            return (True, 0, 999999)
+
+        max_seats = subscription.seat_count
+
+        # Count current members (excluding pending invitations)
+        member_count_result = await self.db.execute(
+            select(sqlfunc.count(OrganizationMember.id)).where(
+                OrganizationMember.organization_id == org.id
+            )
+        )
+        current_members = member_count_result.scalar() or 0
+
+        if current_members >= max_seats:
+            raise SeatLimitExceededError(current_members, max_seats)
+
+        return (True, current_members, max_seats)
 
     async def record_usage_and_deduct(
         self,
@@ -586,6 +783,65 @@ class OrgLimitsService:
             user_id=member.user_id,
         )
 
+    async def sync_all_members_to_new_period(
+        self,
+        org: Organization,
+        new_period_start: datetime,
+        new_period_end: datetime,
+    ) -> int:
+        """Sync all organization members to a new billing period.
+
+        Called when org subscription renews. Resets all member spending
+        counters and updates their billing period.
+
+        Args:
+            org: Organization
+            new_period_start: Start of new billing period
+            new_period_end: End of new billing period
+
+        Returns:
+            Number of members updated
+        """
+        from sqlalchemy import update  # noqa: PLC0415
+
+        # Reset all members' billing period and spending
+        result = await self.db.execute(
+            update(OrganizationMember)
+            .where(OrganizationMember.organization_id == org.id)
+            .values(
+                billing_period_start=new_period_start,
+                billing_period_spending_cents=0,
+            )
+            .returning(OrganizationMember.id)
+        )
+        updated_ids = result.scalars().all()
+        updated_count = len(updated_ids)
+
+        # Unblock members who were blocked due to spending limit
+        await self.db.execute(
+            update(OrganizationMember)
+            .where(OrganizationMember.organization_id == org.id)
+            .where(OrganizationMember.is_blocked == True)
+            .where(OrganizationMember.blocked_reason == "Billing period spending limit reached")
+            .values(
+                is_blocked=False,
+                blocked_reason=None,
+                blocked_at=None,
+            )
+        )
+
+        await self.db.commit()
+
+        logger.info(
+            "Synced all members to new billing period",
+            org_id=org.id,
+            new_period_start=new_period_start.isoformat(),
+            new_period_end=new_period_end.isoformat(),
+            updated_count=updated_count,
+        )
+
+        return updated_count
+
     async def unblock_member(
         self,
         member: OrganizationMember,
@@ -609,3 +865,203 @@ class OrgLimitsService:
             user_id=member.user_id,
             reason=reason,
         )
+
+    async def generate_usage_invoice(
+        self,
+        org: Organization,
+        subscription: OrganizationSubscription,
+    ) -> "OrganizationInvoice | None":
+        """Generate an invoice for usage-based billing at billing period end.
+
+        This is called for organizations with credit_model='usage_based' when
+        their billing period ends. It aggregates all member spending and creates
+        an invoice.
+
+        Args:
+            org: Organization
+            subscription: Active org subscription with period info
+
+        Returns:
+            OrganizationInvoice if created, None if no charges
+        """
+        from sqlalchemy import func as sqlfunc  # noqa: PLC0415
+
+        # Aggregate total spending for all members in this billing period
+        spending_result = await self.db.execute(
+            select(sqlfunc.sum(OrganizationMember.billing_period_spending_cents)).where(
+                OrganizationMember.organization_id == org.id
+            )
+        )
+        total_spending_cents = spending_result.scalar() or 0
+
+        if total_spending_cents <= 0:
+            logger.info(
+                "No usage to invoice for organization",
+                org_id=org.id,
+            )
+            return None
+
+        # Generate invoice number
+        invoice_number = await self._generate_invoice_number(org.id)
+
+        # Create invoice record
+        invoice = OrganizationInvoice(
+            organization_id=org.id,
+            invoice_number=invoice_number,
+            period_start=subscription.current_period_start,
+            period_end=subscription.current_period_end,
+            subtotal_cents=total_spending_cents,
+            total_cents=total_spending_cents,  # No tax for now
+            status="pending",
+            due_date=datetime.now(UTC),  # Due immediately
+        )
+        self.db.add(invoice)
+        await self.db.flush()
+
+        # Create Stripe invoice if org has a Stripe customer
+        if org.stripe_customer_id:
+            try:
+                import stripe  # noqa: PLC0415
+
+                from src.config import settings  # noqa: PLC0415
+
+                if settings.STRIPE_SECRET_KEY:
+                    stripe.api_key = settings.STRIPE_SECRET_KEY
+
+                    # Create invoice item
+                    period = subscription.current_period_start.strftime("%B %Y")
+                    stripe.InvoiceItem.create(
+                        customer=org.stripe_customer_id,
+                        amount=total_spending_cents,
+                        currency="usd",
+                        description=f"Usage charges for {period}",
+                    )
+
+                    # Create and finalize invoice
+                    stripe_invoice = stripe.Invoice.create(
+                        customer=org.stripe_customer_id,
+                        auto_advance=True,  # Automatically finalize and attempt payment
+                        metadata={
+                            "organization_id": str(org.id),
+                            "invoice_id": str(invoice.id),
+                            "type": "usage_based_billing",
+                        },
+                    )
+
+                    invoice.stripe_invoice_id = stripe_invoice.id
+                    invoice.status = "processing"
+
+                    logger.info(
+                        "Created Stripe invoice for org usage",
+                        org_id=org.id,
+                        invoice_id=invoice.id,
+                        stripe_invoice_id=stripe_invoice.id,
+                        amount_cents=total_spending_cents,
+                    )
+
+            except Exception as e:
+                logger.exception(
+                    "Failed to create Stripe invoice",
+                    org_id=org.id,
+                    error=str(e),
+                )
+                invoice.status = "failed"
+                invoice.notes = f"Stripe invoice creation failed: {e!s}"
+
+        await self.db.commit()
+        await self.db.refresh(invoice)
+
+        return invoice
+
+    async def _generate_invoice_number(self, org_id: str) -> str:
+        """Generate a unique invoice number for an organization."""
+        from sqlalchemy import func as sqlfunc  # noqa: PLC0415
+
+        # Count existing invoices for this org
+        count_result = await self.db.execute(
+            select(sqlfunc.count(OrganizationInvoice.id)).where(
+                OrganizationInvoice.organization_id == org_id
+            )
+        )
+        count = (count_result.scalar() or 0) + 1
+
+        # Format: INV-YYYYMM-XXXX where XXXX is zero-padded count
+        now = datetime.now(UTC)
+        return f"INV-{now.strftime('%Y%m')}-{count:04d}"
+
+
+async def process_org_billing_period_ends(db: AsyncSession) -> list[str]:
+    """Process all organizations whose billing period has ended.
+
+    This should be called periodically (e.g., hourly) from a background task.
+    It finds orgs with usage_based credit model whose current_period_end has passed,
+    generates invoices, and syncs member billing periods.
+
+    Args:
+        db: Database session
+
+    Returns:
+        List of processed organization IDs
+    """
+    now = datetime.now(UTC)
+
+    # Find orgs with expired billing periods
+    result = await db.execute(
+        select(Organization, OrganizationSubscription)
+        .join(
+            OrganizationSubscription,
+            OrganizationSubscription.organization_id == Organization.id,
+        )
+        .where(Organization.credit_model == "usage_based")
+        .where(OrganizationSubscription.status.in_(["active", "trialing"]))
+        .where(OrganizationSubscription.current_period_end <= now)
+    )
+    rows = result.all()
+
+    processed_ids: list[str] = []
+    org_limits = OrgLimitsService(db)
+
+    for org, subscription in rows:
+        try:
+            # Generate invoice for the ending period
+            invoice = await org_limits.generate_usage_invoice(org, subscription)
+
+            if invoice:
+                logger.info(
+                    "Generated usage invoice for org",
+                    org_id=org.id,
+                    invoice_id=invoice.id,
+                    total_cents=invoice.total_cents,
+                )
+
+            # Calculate new billing period (30 days from now)
+            # Note: This is typically handled by Stripe webhook, but we do it here
+            # as a fallback for orgs without Stripe subscriptions
+            if not subscription.stripe_subscription_id:
+                new_period_start = subscription.current_period_end
+                new_period_end = new_period_start + timedelta(days=30)
+                subscription.current_period_start = new_period_start
+                subscription.current_period_end = new_period_end
+
+                # Sync all members to new period
+                await org_limits.sync_all_members_to_new_period(
+                    org, new_period_start, new_period_end
+                )
+
+            processed_ids.append(str(org.id))
+
+        except Exception as e:
+            logger.exception(
+                "Failed to process org billing period end",
+                org_id=org.id,
+                error=str(e),
+            )
+
+    await db.commit()
+
+    logger.info(
+        "Processed org billing period ends",
+        processed_count=len(processed_ids),
+    )
+
+    return processed_ids

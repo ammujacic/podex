@@ -326,7 +326,7 @@ class TestTerminalEvents:
             patch("src.websocket.hub.sio", mock_sio),
             patch("src.websocket.hub._verify_auth_token", return_value=None),
         ):
-            await terminal_attach("sid-123", {"workspace_id": "ws-456"})
+            await terminal_attach("sid-123", {"workspace_id": "ws-456", "terminal_id": "term-789"})
 
             mock_sio.emit.assert_called_once()
             call_args = mock_sio.emit.call_args

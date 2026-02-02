@@ -3117,6 +3117,21 @@ export interface CreditTransactionResponse {
   created_at: string;
 }
 
+export interface PaymentMethodResponse {
+  id: string;
+  type: string;
+  brand: string | null;
+  last4: string | null;
+  exp_month: number | null;
+  exp_year: number | null;
+  is_default: boolean;
+}
+
+export interface PaymentMethodsListResponse {
+  payment_methods: PaymentMethodResponse[];
+  default_payment_method_id: string | null;
+}
+
 export interface InvoiceResponse {
   id: string;
   invoice_number: string;
@@ -3200,6 +3215,11 @@ export async function cancelSubscription(reason?: string): Promise<SubscriptionR
     cancel_at_period_end: true,
     cancellation_reason: reason,
   });
+}
+
+// Payment Methods
+export async function getPaymentMethods(): Promise<PaymentMethodsListResponse> {
+  return api.get<PaymentMethodsListResponse>('/api/billing/payment-methods');
 }
 
 // Hardware Specs
@@ -4913,7 +4933,13 @@ export interface AdminModel extends PublicModel {
   input_cost_per_million: number;
   output_cost_per_million: number;
   is_enabled: boolean;
+  is_user_key_model: boolean;
+  is_featured: boolean;
   sort_order: number;
+  display_order: number;
+  categories: string[];
+  short_description: string | null;
+  model_metadata: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
 }
@@ -4932,6 +4958,13 @@ export interface CreateModelRequest {
   output_cost_per_million?: number;
   is_enabled?: boolean;
   is_default?: boolean;
+  is_user_key_model?: boolean;
+  is_featured?: boolean;
+  sort_order?: number;
+  display_order?: number;
+  categories?: string[];
+  short_description?: string;
+  model_metadata?: Record<string, unknown>;
 }
 
 export interface UpdateModelRequest {
@@ -4945,7 +4978,13 @@ export interface UpdateModelRequest {
   output_cost_per_million?: number;
   is_enabled?: boolean;
   is_default?: boolean;
+  is_user_key_model?: boolean;
+  is_featured?: boolean;
   sort_order?: number;
+  display_order?: number;
+  categories?: string[];
+  short_description?: string;
+  model_metadata?: Record<string, unknown>;
 }
 
 export interface UpdateAgentDefaultsRequest {
@@ -6716,4 +6755,179 @@ export async function bulkInviteWaitlist(
   if (options?.gift_plan_id) params.append('gift_plan_id', options.gift_plan_id);
   if (options?.gift_months) params.append('gift_months', String(options.gift_months));
   return api.post(`/api/admin/waitlist/bulk-invite?${params}`, {});
+}
+
+// ==================== Organization Billing ====================
+
+export interface OrgBillingSummaryResponse {
+  period_start: string;
+  period_end: string;
+  total_spending_cents: number;
+  credit_pool_cents: number;
+  member_count: number;
+  top_users?: {
+    user_id: string;
+    name: string | null;
+    email: string;
+    spending_cents: number;
+  }[];
+}
+
+export interface OrgCheckoutResponse {
+  url: string;
+  session_id: string;
+}
+
+export interface OrgPortalResponse {
+  url: string;
+}
+
+/**
+ * Get organization billing summary.
+ */
+export async function getOrgBillingSummary(orgId: string): Promise<OrgBillingSummaryResponse> {
+  return api.get<OrgBillingSummaryResponse>(`/api/organizations/${orgId}/billing/summary`);
+}
+
+/**
+ * Get organization payment methods from Stripe.
+ */
+export async function getOrgPaymentMethods(orgId: string): Promise<PaymentMethodsListResponse> {
+  return api.get<PaymentMethodsListResponse>(`/api/organizations/${orgId}/billing/payment-methods`);
+}
+
+/**
+ * Create a Stripe checkout session for organization credits purchase.
+ */
+export async function createOrgCreditsCheckout(
+  orgId: string,
+  amountCents: number,
+  successUrl?: string,
+  cancelUrl?: string
+): Promise<OrgCheckoutResponse> {
+  return api.post<OrgCheckoutResponse>(`/api/organizations/${orgId}/billing/checkout/credits`, {
+    amount_cents: amountCents,
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+  });
+}
+
+/**
+ * Create a Stripe customer portal session for the organization.
+ */
+export async function createOrgPortalSession(
+  orgId: string,
+  returnUrl?: string
+): Promise<OrgPortalResponse> {
+  return api.post<OrgPortalResponse>(`/api/organizations/${orgId}/billing/portal`, {
+    return_url: returnUrl,
+  });
+}
+
+// ==================== Organization Usage ====================
+
+export interface OrgModelUsage {
+  model: string;
+  total_tokens: number;
+  total_cost_cents: number;
+  record_count: number;
+}
+
+export interface OrgMemberUsage {
+  user_id: string;
+  user_name: string | null;
+  user_email: string | null;
+  total_tokens: number;
+  total_compute_cents: number;
+  total_cost_cents: number;
+}
+
+export interface OrgSessionUsage {
+  session_id: string;
+  session_name: string | null;
+  total_tokens: number;
+  total_cost_cents: number;
+}
+
+export interface OrgUsageResponse {
+  period_start: string;
+  period_end: string;
+  total_tokens: number;
+  total_compute_cents: number;
+  total_cost_cents: number;
+  by_model: OrgModelUsage[];
+  by_member: OrgMemberUsage[];
+  by_session: OrgSessionUsage[];
+}
+
+export interface OrgSubscriptionResponse {
+  id: string;
+  plan_name: string;
+  plan_slug: string;
+  status: string;
+  billing_cycle: string;
+  seat_count: number;
+  current_period_start: string;
+  current_period_end: string;
+  cancel_at_period_end: boolean;
+  canceled_at: string | null;
+  price_monthly_cents: number;
+  price_yearly_cents: number;
+}
+
+/**
+ * Get organization usage breakdown for the current billing period.
+ */
+export async function getOrgUsageBreakdown(orgId: string): Promise<OrgUsageResponse> {
+  return api.get<OrgUsageResponse>(`/api/organizations/${orgId}/billing/usage`);
+}
+
+/**
+ * Get organization subscription details.
+ */
+export async function getOrgSubscription(orgId: string): Promise<OrgSubscriptionResponse | null> {
+  return api.get<OrgSubscriptionResponse | null>(
+    `/api/organizations/${orgId}/billing/subscription`
+  );
+}
+
+/**
+ * Create a checkout session to change the organization's plan.
+ */
+export async function createOrgPlanChangeCheckout(
+  orgId: string,
+  planSlug: string,
+  billingCycle: 'monthly' | 'yearly',
+  successUrl?: string,
+  cancelUrl?: string
+): Promise<OrgCheckoutResponse> {
+  return api.post<OrgCheckoutResponse>(`/api/organizations/${orgId}/billing/checkout/change-plan`, {
+    plan_slug: planSlug,
+    billing_cycle: billingCycle,
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+  });
+}
+
+/**
+ * Create a checkout session for a new organization subscription.
+ */
+export async function createOrgSubscriptionCheckout(
+  orgId: string,
+  planSlug: string,
+  billingCycle: 'monthly' | 'yearly',
+  seatCount: number,
+  successUrl?: string,
+  cancelUrl?: string
+): Promise<OrgCheckoutResponse> {
+  return api.post<OrgCheckoutResponse>(
+    `/api/organizations/${orgId}/billing/checkout/subscription`,
+    {
+      plan_slug: planSlug,
+      billing_cycle: billingCycle,
+      seat_count: seatCount,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+    }
+  );
 }

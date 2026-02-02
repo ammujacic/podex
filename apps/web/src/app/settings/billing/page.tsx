@@ -8,10 +8,12 @@ import {
   cancelSubscription,
   listInvoices,
   getInvoice,
+  getPaymentMethods,
   api,
   type SubscriptionResponse,
   type CreditBalanceResponse,
   type InvoiceResponse,
+  type PaymentMethodsListResponse,
 } from '@/lib/api';
 import { openStripePortal } from '@/lib/billing-utils';
 import { CreditCard, Download, Loader2, Building2, ArrowRight } from 'lucide-react';
@@ -64,6 +66,7 @@ export default function BillingPage() {
   const [subscription, setSubscription] = useState<SubscriptionResponse | null>(null);
   const [credits, setCredits] = useState<CreditBalanceResponse | null>(null);
   const [invoices, setInvoices] = useState<InvoiceResponse[]>([]);
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodsListResponse | null>(null);
   const [selectedInvoice, setSelectedInvoice] = useState<InvoiceResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
@@ -99,15 +102,17 @@ export default function BillingPage() {
     async function loadData() {
       try {
         setLoading(true);
-        const [subData, creditsData, invoicesData] = await Promise.all([
+        const [subData, creditsData, invoicesData, paymentMethodsData] = await Promise.all([
           getSubscription().catch(() => null),
           getCreditBalance().catch(() => null),
           listInvoices(1, 10).catch(() => []),
+          getPaymentMethods().catch(() => null),
         ]);
 
         setSubscription(subData);
         setCredits(creditsData);
         setInvoices(invoicesData);
+        setPaymentMethods(paymentMethodsData);
       } catch (err) {
         setError('Failed to load billing data');
         console.error(err);
@@ -424,21 +429,59 @@ export default function BillingPage() {
 
       {/* Payment Methods */}
       <div className="bg-surface border border-border-default rounded-xl p-6 mb-8">
-        <div className="flex items-center gap-3 mb-4">
-          <CreditCard className="w-5 h-5 text-text-muted" />
-          <h2 className="text-lg font-semibold text-text-primary">Payment Methods</h2>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <CreditCard className="w-5 h-5 text-text-muted" />
+            <h2 className="text-lg font-semibold text-text-primary">Payment Methods</h2>
+          </div>
+          <button
+            onClick={handleOpenPortal}
+            disabled={portalLoading}
+            className="px-4 py-2 bg-elevated hover:bg-overlay text-text-primary rounded-lg transition-colors font-medium disabled:opacity-50 flex items-center gap-2 text-sm"
+          >
+            {portalLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+            {portalLoading ? 'Opening...' : 'Manage'}
+          </button>
         </div>
-        <p className="text-sm text-text-muted mb-4">
-          Manage your payment methods and billing details.
-        </p>
-        <button
-          onClick={handleOpenPortal}
-          disabled={portalLoading}
-          className="px-4 py-2 bg-elevated hover:bg-overlay text-text-primary rounded-lg transition-colors font-medium disabled:opacity-50 flex items-center gap-2"
-        >
-          {portalLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-          {portalLoading ? 'Opening...' : 'Manage Payment Methods'}
-        </button>
+
+        {paymentMethods && paymentMethods.payment_methods.length > 0 ? (
+          <div className="space-y-3">
+            {paymentMethods.payment_methods.map((pm) => (
+              <div
+                key={pm.id}
+                className="flex items-center justify-between p-4 bg-elevated rounded-lg border border-border-subtle"
+              >
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-7 bg-overlay rounded flex items-center justify-center">
+                    <span className="text-xs font-bold text-text-muted uppercase">
+                      {pm.brand || pm.type}
+                    </span>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-text-primary">
+                      {pm.brand ? pm.brand.charAt(0).toUpperCase() + pm.brand.slice(1) : pm.type}{' '}
+                      ending in {pm.last4}
+                    </p>
+                    {pm.exp_month && pm.exp_year && (
+                      <p className="text-xs text-text-muted">
+                        Expires {pm.exp_month.toString().padStart(2, '0')}/{pm.exp_year}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                {pm.is_default && (
+                  <span className="px-2 py-1 text-xs font-medium bg-accent-primary/20 text-accent-primary rounded">
+                    Default
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-text-muted">
+            No payment methods on file. Add one to enable subscriptions and purchases.
+          </p>
+        )}
       </div>
 
       {/* Past Invoices */}

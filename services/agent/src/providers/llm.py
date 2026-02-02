@@ -1,4 +1,14 @@
-"""Unified LLM provider interface supporting multiple providers."""
+"""Unified LLM provider interface supporting multiple providers.
+
+Supports:
+- Anthropic (direct API and OAuth tokens)
+- OpenAI (direct API)
+- OpenAI Codex (ChatGPT Plus/Pro OAuth)
+- GitHub Copilot (Copilot subscription OAuth)
+- Google Gemini CLI (Google OAuth)
+- OpenRouter (unified API)
+- Ollama (local LLM)
+"""
 
 import json
 import time
@@ -6,6 +16,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+import httpx
 import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
@@ -16,9 +27,57 @@ from src.config import settings
 
 logger = structlog.get_logger()
 
+# OpenAI Codex configuration (ChatGPT Plus/Pro OAuth)
+OPENAI_CODEX_BASE_URL = "https://chatgpt.com/backend-api"
+
+# GitHub Copilot configuration
+GITHUB_COPILOT_BASE_URL = "https://api.individual.githubcopilot.com"
+GITHUB_COPILOT_HEADERS = {
+    "User-Agent": "GitHubCopilotChat/0.35.0",
+    "Editor-Version": "vscode/1.107.0",
+    "Editor-Plugin-Version": "copilot-chat/0.35.0",
+    "Copilot-Integration-Id": "vscode-chat",
+}
+
+# Google Gemini CLI configuration
+GOOGLE_GEMINI_CLI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
 # Claude Code identity - REQUIRED for OAuth tokens to work
 # This must be the first line of the system prompt when using OAuth tokens (sk-ant-oat-*)
 CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
+
+# Type alias for usage source classification
+UsageSource = Literal["local", "included", "external"]
+
+
+def determine_usage_source(provider: str) -> UsageSource:
+    """Determine the usage source for billing purposes.
+
+    This is the single source of truth for classifying how usage should be billed.
+
+    Classification:
+        - "local": Free, no quota impact (ollama, lmstudio)
+        - "included": Platform-provided, counts toward user's included quota (openrouter)
+        - "external": User's own API key/quota, not billed by us (anthropic, openai, etc.)
+
+    Args:
+        provider: The LLM provider being used (e.g., "openrouter", "anthropic", "ollama")
+
+    Returns:
+        Usage source: "local", "included", or "external"
+    """
+    # Local providers - free, no quota impact
+    if provider in ("ollama", "lmstudio"):
+        return "local"
+
+    # OpenRouter is our platform provider - counts as included quota
+    # Note: Overage handling is done at the billing service level, not here
+    if provider == "openrouter":
+        return "included"
+
+    # Everything else (anthropic, openai, openai-codex, github-copilot, google-gemini-cli, etc.)
+    # is external - user is using their own API keys/quota
+    return "external"
 
 
 def _is_oauth_token(api_key: str | None) -> bool:
@@ -169,6 +228,35 @@ class LLMProvider:
             )
         return self._openrouter_client
 
+    def _get_openai_codex_client(self, api_key: str) -> AsyncOpenAI:
+        """Get OpenAI Codex client for ChatGPT Plus/Pro OAuth.
+
+        Args:
+            api_key: OAuth access token from ChatGPT authentication.
+
+        Returns:
+            OpenAI client configured for Codex API.
+        """
+        return AsyncOpenAI(
+            base_url=OPENAI_CODEX_BASE_URL,
+            api_key=api_key,
+        )
+
+    def _get_github_copilot_client(self, api_key: str) -> AsyncOpenAI:
+        """Get GitHub Copilot client.
+
+        Args:
+            api_key: Copilot completion token (NOT the GitHub OAuth token).
+
+        Returns:
+            OpenAI client configured for Copilot API with required headers.
+        """
+        return AsyncOpenAI(
+            base_url=GITHUB_COPILOT_BASE_URL,
+            api_key=api_key,
+            default_headers=GITHUB_COPILOT_HEADERS,
+        )
+
     def _get_anthropic_client(self, api_key: str | None = None) -> AsyncAnthropic:
         """Get Anthropic client, optionally with user-provided API key.
 
@@ -316,34 +404,24 @@ class LLMProvider:
             "Please ensure the model is registered in the database with a valid provider."
         )
 
-    def _determine_usage_source(self, provider: str, llm_api_keys: dict[str, str] | None) -> str:
+    def _determine_usage_source(
+        self,
+        provider: str,
+        llm_api_keys: dict[str, str] | None = None,  # noqa: ARG002
+    ) -> UsageSource:
         """Determine the usage source for billing purposes.
+
+        Delegates to the module-level determine_usage_source() function.
+        The llm_api_keys parameter is kept for backwards compatibility but not used.
 
         Args:
             provider: The LLM provider being used
-            llm_api_keys: User-provided API keys (if any)
+            llm_api_keys: Deprecated, kept for backwards compatibility
 
         Returns:
-            Usage source: "included", "external", or "local"
+            Usage source: "local", "included", or "external"
         """
-        # Local providers (Ollama, LM Studio) - free, no quota impact
-        if provider in ("ollama", "lmstudio"):
-            return "local"
-
-        # If user provided their own API key for this provider, it's external
-        if llm_api_keys and provider in llm_api_keys:
-            return "external"
-
-        # OpenRouter is our platform provider - counts as included
-        if provider == "openrouter":
-            return "included"
-
-        # For anthropic/openai without user keys, check if we're using platform keys
-        # If using platform API keys (not OpenRouter), this is external since user is
-        # consuming their own quota on those providers
-        # NOTE: In current architecture, only OpenRouter is "included" (platform-provided)
-        # Direct anthropic/openai through platform keys is still "external"
-        return "external"
+        return determine_usage_source(provider)
 
     async def complete(self, request: CompletionRequest) -> dict[str, Any]:
         """
@@ -401,6 +479,33 @@ class LLMProvider:
                 tools=request.tools,
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
+            )
+        elif resolved_provider == "openai-codex":
+            result = await self._complete_openai_codex(
+                model=request.model,
+                messages=request.messages,
+                tools=request.tools,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                api_key=user_key,
+            )
+        elif resolved_provider == "github-copilot":
+            result = await self._complete_github_copilot(
+                model=request.model,
+                messages=request.messages,
+                tools=request.tools,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                api_key=user_key,
+            )
+        elif resolved_provider == "google-gemini-cli":
+            result = await self._complete_google_gemini_cli(
+                model=request.model,
+                messages=request.messages,
+                tools=request.tools,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                api_key=user_key,
             )
         else:
             raise ValueError(f"Unknown provider: {resolved_provider}")
@@ -490,6 +595,36 @@ class LLMProvider:
                     temperature=request.temperature,
                 ):
                     yield event
+            elif resolved_provider == "openai-codex":
+                async for event in self._stream_openai_codex(
+                    model=request.model,
+                    messages=request.messages,
+                    tools=request.tools,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    api_key=user_key,
+                ):
+                    yield event
+            elif resolved_provider == "github-copilot":
+                async for event in self._stream_github_copilot(
+                    model=request.model,
+                    messages=request.messages,
+                    tools=request.tools,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    api_key=user_key,
+                ):
+                    yield event
+            elif resolved_provider == "google-gemini-cli":
+                async for event in self._stream_google_gemini_cli(
+                    model=request.model,
+                    messages=request.messages,
+                    tools=request.tools,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    api_key=user_key,
+                ):
+                    yield event
             else:
                 yield StreamEvent(type="error", error=f"Unknown provider: {resolved_provider}")
                 return
@@ -543,6 +678,14 @@ class LLMProvider:
                 usage_source=context.usage_source,
             )
             await tracker.record_token_usage(params)
+            logger.info(
+                "Tracked LLM usage",
+                provider=context.provider,
+                usage_source=context.usage_source,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                model=context.model,
+            )
         except Exception:
             # Don't fail the request if usage tracking fails
             logger.exception("Failed to track token usage")
@@ -1045,6 +1188,8 @@ class LLMProvider:
     ) -> AsyncGenerator[StreamEvent, None]:
         """Stream completion using OpenAI API.
 
+        Delegates to _stream_openai_compatible since OpenAI uses the same format.
+
         Args:
             model: Model identifier
             messages: Conversation messages
@@ -1053,26 +1198,10 @@ class LLMProvider:
             temperature: Sampling temperature
             api_key: Optional user API key
         """
-        # Get appropriate client (with user key or platform default)
         client = self._get_openai_client(api_key)
+        openai_tools = self._convert_tools_to_openai(tools)
 
-        # Convert Anthropic-style tools to OpenAI format
-        openai_tools = None
-        if tools:
-            openai_tools = []
-            for tool in tools:
-                openai_tools.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": tool["name"],
-                            "description": tool["description"],
-                            "parameters": tool["input_schema"],
-                        },
-                    },
-                )
-
-        # Map model names if needed
+        # Map model names if needed (for compatibility)
         model_mapping = {
             "claude-sonnet-4-20250514": "gpt-4o",
             "claude-opus-4.5-20251101": "gpt-4o",
@@ -1080,7 +1209,6 @@ class LLMProvider:
         }
         openai_model = model_mapping.get(model, model)
 
-        # Build request parameters
         request_params: dict[str, Any] = {
             "model": openai_model,
             "messages": messages,
@@ -1094,76 +1222,10 @@ class LLMProvider:
             request_params["tools"] = openai_tools
             request_params["tool_choice"] = "auto"
 
-        # Track tool calls being built
-        tool_calls_building: dict[int, dict[str, Any]] = {}
-        usage_data: dict[str, int] = {}
-        finish_reason: str | None = None
-
-        stream = await client.chat.completions.create(**request_params)
-
-        async for chunk in stream:
-            if not chunk.choices and chunk.usage:
-                # Final chunk with usage
-                usage_data = {
-                    "input_tokens": chunk.usage.prompt_tokens,
-                    "output_tokens": chunk.usage.completion_tokens,
-                    "total_tokens": chunk.usage.total_tokens,
-                }
-                continue
-
-            if not chunk.choices:
-                continue
-
-            choice = chunk.choices[0]
-            delta = choice.delta
-
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-
-            # Handle text content
-            if delta.content:
-                yield StreamEvent(type="token", content=delta.content)
-
-            # Handle tool calls
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if idx not in tool_calls_building:
-                        # New tool call starting
-                        tool_calls_building[idx] = {
-                            "id": tc.id or "",
-                            "name": tc.function.name if tc.function else "",
-                            "arguments": "",
-                        }
-                        if tc.function and tc.function.name:
-                            yield StreamEvent(
-                                type="tool_call_start",
-                                tool_call_id=tc.id,
-                                tool_name=tc.function.name,
-                            )
-
-                    # Accumulate arguments
-                    if tc.function and tc.function.arguments:
-                        tool_calls_building[idx]["arguments"] += tc.function.arguments
-
-        # Emit tool call ends
-        for tc_data in tool_calls_building.values():
-            try:
-                tool_input = json.loads(tc_data["arguments"]) if tc_data["arguments"] else {}
-            except json.JSONDecodeError:
-                tool_input = {}
-            yield StreamEvent(
-                type="tool_call_end",
-                tool_call_id=tc_data["id"],
-                tool_name=tc_data["name"],
-                tool_input=tool_input,
-            )
-
-        yield StreamEvent(
-            type="done",
-            usage=usage_data,
-            stop_reason=finish_reason or "stop",
-        )
+        async for event in self._stream_openai_compatible(
+            client, request_params, provider_name="openai"
+        ):
+            yield event
 
     async def _stream_openrouter(
         self,
@@ -1173,25 +1235,12 @@ class LLMProvider:
         max_tokens: int = 4096,
         temperature: float = 0.7,
     ) -> AsyncGenerator[StreamEvent, None]:
-        """Stream completion using OpenRouter API."""
+        """Stream completion using OpenRouter API.
 
-        # Convert Anthropic-style tools to OpenAI format
-        openai_tools = None
-        if tools:
-            openai_tools = []
-            for tool in tools:
-                openai_tools.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": tool["name"],
-                            "description": tool["description"],
-                            "parameters": tool["input_schema"],
-                        },
-                    },
-                )
+        Delegates to _stream_openai_compatible since OpenRouter uses the OpenAI API format.
+        """
+        openai_tools = self._convert_tools_to_openai(tools)
 
-        # Build request parameters
         request_params: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -1205,76 +1254,10 @@ class LLMProvider:
             request_params["tools"] = openai_tools
             request_params["tool_choice"] = "auto"
 
-        # Track tool calls being built
-        tool_calls_building: dict[int, dict[str, Any]] = {}
-        usage_data: dict[str, int] = {}
-        finish_reason: str | None = None
-
-        stream = await self.openrouter_client.chat.completions.create(**request_params)
-
-        async for chunk in stream:
-            if not chunk.choices and chunk.usage:
-                # Final chunk with usage
-                usage_data = {
-                    "input_tokens": chunk.usage.prompt_tokens,
-                    "output_tokens": chunk.usage.completion_tokens,
-                    "total_tokens": chunk.usage.total_tokens,
-                }
-                continue
-
-            if not chunk.choices:
-                continue
-
-            choice = chunk.choices[0]
-            delta = choice.delta
-
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-
-            # Handle text content
-            if delta.content:
-                yield StreamEvent(type="token", content=delta.content)
-
-            # Handle tool calls
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if idx not in tool_calls_building:
-                        # New tool call starting
-                        tool_calls_building[idx] = {
-                            "id": tc.id or "",
-                            "name": tc.function.name if tc.function else "",
-                            "arguments": "",
-                        }
-                        if tc.function and tc.function.name:
-                            yield StreamEvent(
-                                type="tool_call_start",
-                                tool_call_id=tc.id,
-                                tool_name=tc.function.name,
-                            )
-
-                    # Accumulate arguments
-                    if tc.function and tc.function.arguments:
-                        tool_calls_building[idx]["arguments"] += tc.function.arguments
-
-        # Emit tool call ends
-        for tc_data in tool_calls_building.values():
-            try:
-                tool_input = json.loads(tc_data["arguments"]) if tc_data["arguments"] else {}
-            except json.JSONDecodeError:
-                tool_input = {}
-            yield StreamEvent(
-                type="tool_call_end",
-                tool_call_id=tc_data["id"],
-                tool_name=tc_data["name"],
-                tool_input=tool_input,
-            )
-
-        yield StreamEvent(
-            type="done",
-            usage=usage_data,
-            stop_reason=finish_reason or "stop",
-        )
+        async for event in self._stream_openai_compatible(
+            self.openrouter_client, request_params, provider_name="openrouter"
+        ):
+            yield event
 
     async def _stream_ollama(
         self,
@@ -1398,5 +1381,600 @@ class LLMProvider:
                 "output_tokens": completion_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
             },
+            stop_reason=finish_reason or "stop",
+        )
+
+    # ==================== OAuth Provider Implementations ====================
+
+    async def _complete_openai_codex(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Complete using OpenAI Codex API (ChatGPT Plus/Pro OAuth).
+
+        Args:
+            model: Model identifier (e.g., "openai-codex/gpt-5.2-codex")
+            messages: Conversation messages
+            tools: Optional tool definitions
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            api_key: OAuth access token from ChatGPT authentication (required)
+        """
+        if not api_key:
+            raise ValueError("OpenAI Codex requires an OAuth token")
+
+        client = self._get_openai_codex_client(api_key)
+
+        # Extract model ID from prefixed format
+        codex_model = model.split("/", 1)[1] if "/" in model else model
+
+        logger.info(
+            "OpenAI Codex API call",
+            original_model=model,
+            resolved_model=codex_model,
+        )
+
+        # Convert Anthropic-style tools to OpenAI format
+        openai_tools = self._convert_tools_to_openai(tools)
+
+        # Build request parameters
+        request_params: dict[str, Any] = {
+            "model": codex_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+        if openai_tools:
+            request_params["tools"] = openai_tools
+            request_params["tool_choice"] = "auto"
+
+        # Make API call
+        response = await client.chat.completions.create(**request_params)
+
+        return self._parse_openai_response(response)
+
+    async def _complete_github_copilot(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Complete using GitHub Copilot API.
+
+        Args:
+            model: Model identifier (e.g., "github-copilot/gpt-5.2-codex")
+            messages: Conversation messages
+            tools: Optional tool definitions
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            api_key: Copilot completion token (NOT the GitHub OAuth token)
+        """
+        if not api_key:
+            raise ValueError("GitHub Copilot requires a Copilot token")
+
+        client = self._get_github_copilot_client(api_key)
+
+        # Extract model ID from prefixed format
+        copilot_model = model.split("/", 1)[1] if "/" in model else model
+
+        logger.info(
+            "GitHub Copilot API call",
+            original_model=model,
+            resolved_model=copilot_model,
+        )
+
+        # Convert Anthropic-style tools to OpenAI format
+        openai_tools = self._convert_tools_to_openai(tools)
+
+        # Build request parameters
+        request_params: dict[str, Any] = {
+            "model": copilot_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+        if openai_tools:
+            request_params["tools"] = openai_tools
+            request_params["tool_choice"] = "auto"
+
+        # Make API call
+        response = await client.chat.completions.create(**request_params)
+
+        return self._parse_openai_response(response)
+
+    async def _complete_google_gemini_cli(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Complete using Google Gemini CLI API.
+
+        Args:
+            model: Model identifier (e.g., "google-gemini-cli/gemini-2.5-flash")
+            messages: Conversation messages
+            tools: Optional tool definitions
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            api_key: Google OAuth access token (required)
+        """
+        if not api_key:
+            raise ValueError("Google Gemini CLI requires an OAuth token")
+
+        # Extract model ID from prefixed format
+        gemini_model = model.split("/", 1)[1] if "/" in model else model
+
+        logger.info(
+            "Google Gemini CLI API call",
+            original_model=model,
+            resolved_model=gemini_model,
+        )
+
+        # Build the Gemini API request
+        url = f"{GOOGLE_GEMINI_CLI_BASE_URL}/models/{gemini_model}:generateContent"
+
+        # Convert messages to Gemini format
+        contents = self._convert_messages_to_gemini(messages)
+
+        # Build request body
+        request_body: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": max_tokens,
+                "temperature": temperature,
+            },
+        }
+
+        # Add tools if provided
+        if tools:
+            request_body["tools"] = self._convert_tools_to_gemini(tools)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                url,
+                json=request_body,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=120.0,
+            )
+
+            if response.status_code != 200:
+                logger.error(
+                    "Gemini CLI API call failed",
+                    status=response.status_code,
+                    body=response.text,
+                )
+                raise ValueError(f"Gemini CLI API failed: {response.text}")
+
+            data = response.json()
+            return self._parse_gemini_response(data)
+
+    def _convert_tools_to_openai(
+        self, tools: list[dict[str, Any]] | None
+    ) -> list[dict[str, Any]] | None:
+        """Convert Anthropic-style tools to OpenAI format."""
+        if not tools:
+            return None
+
+        openai_tools = []
+        for tool in tools:
+            openai_tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool["description"],
+                        "parameters": tool["input_schema"],
+                    },
+                },
+            )
+        return openai_tools
+
+    def _convert_messages_to_gemini(self, messages: list[dict[str, str]]) -> list[dict[str, Any]]:
+        """Convert OpenAI-style messages to Gemini format."""
+        contents = []
+        system_instruction = None
+
+        for msg in messages:
+            role = msg["role"]
+            content = msg["content"]
+
+            if role == "system":
+                # Gemini uses systemInstruction separately
+                system_instruction = content
+            elif role == "user":
+                contents.append({"role": "user", "parts": [{"text": content}]})
+            elif role == "assistant":
+                contents.append({"role": "model", "parts": [{"text": content}]})
+
+        # Prepend system instruction as first user message if present
+        if system_instruction and contents:
+            parts = contents[0]["parts"]
+            parts.insert(0, {"text": f"[System: {system_instruction}]\n\n"})  # type: ignore[attr-defined]
+
+        return contents
+
+    def _convert_tools_to_gemini(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert Anthropic-style tools to Gemini format."""
+        function_declarations = []
+        for tool in tools:
+            function_declarations.append(
+                {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["input_schema"],
+                }
+            )
+        return [{"functionDeclarations": function_declarations}]
+
+    def _parse_openai_response(self, response: Any) -> dict[str, Any]:
+        """Parse OpenAI-style response into standard format."""
+        content = ""
+        tool_calls = []
+
+        choice = response.choices[0]
+        message = choice.message
+
+        if message.content:
+            content = message.content
+
+        if message.tool_calls:
+            for tc in message.tool_calls:
+                tool_calls.append(
+                    {
+                        "id": tc.id,
+                        "name": tc.function.name,
+                        "arguments": json.loads(tc.function.arguments),
+                    },
+                )
+
+        return {
+            "content": content,
+            "tool_calls": tool_calls,
+            "usage": {
+                "input_tokens": response.usage.prompt_tokens if response.usage else 0,
+                "output_tokens": response.usage.completion_tokens if response.usage else 0,
+                "total_tokens": response.usage.total_tokens if response.usage else 0,
+            },
+            "stop_reason": choice.finish_reason,
+        }
+
+    def _parse_gemini_response(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Parse Gemini response into standard format."""
+        content = ""
+        tool_calls = []
+
+        candidates = data.get("candidates", [])
+        if candidates:
+            candidate = candidates[0]
+            parts = candidate.get("content", {}).get("parts", [])
+
+            for part in parts:
+                if "text" in part:
+                    content += part["text"]
+                elif "functionCall" in part:
+                    fc = part["functionCall"]
+                    tool_calls.append(
+                        {
+                            "id": f"call_{fc['name']}",
+                            "name": fc["name"],
+                            "arguments": fc.get("args", {}),
+                        }
+                    )
+
+        # Get usage metadata
+        usage_metadata = data.get("usageMetadata", {})
+
+        return {
+            "content": content,
+            "tool_calls": tool_calls,
+            "usage": {
+                "input_tokens": usage_metadata.get("promptTokenCount", 0),
+                "output_tokens": usage_metadata.get("candidatesTokenCount", 0),
+                "total_tokens": usage_metadata.get("totalTokenCount", 0),
+            },
+            "stop_reason": candidates[0].get("finishReason", "STOP") if candidates else "STOP",
+        }
+
+    # ==================== OAuth Provider Streaming ====================
+
+    async def _stream_openai_codex(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        api_key: str | None = None,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Stream completion using OpenAI Codex API."""
+        if not api_key:
+            yield StreamEvent(type="error", error="OpenAI Codex requires an OAuth token")
+            return
+
+        client = self._get_openai_codex_client(api_key)
+        codex_model = model.split("/", 1)[1] if "/" in model else model
+
+        openai_tools = self._convert_tools_to_openai(tools)
+
+        request_params: dict[str, Any] = {
+            "model": codex_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+
+        if openai_tools:
+            request_params["tools"] = openai_tools
+            request_params["tool_choice"] = "auto"
+
+        async for event in self._stream_openai_compatible(
+            client, request_params, provider_name="openai-codex"
+        ):
+            yield event
+
+    async def _stream_github_copilot(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        api_key: str | None = None,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Stream completion using GitHub Copilot API."""
+        if not api_key:
+            yield StreamEvent(type="error", error="GitHub Copilot requires a Copilot token")
+            return
+
+        client = self._get_github_copilot_client(api_key)
+        copilot_model = model.split("/", 1)[1] if "/" in model else model
+
+        openai_tools = self._convert_tools_to_openai(tools)
+
+        request_params: dict[str, Any] = {
+            "model": copilot_model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+
+        if openai_tools:
+            request_params["tools"] = openai_tools
+            request_params["tool_choice"] = "auto"
+
+        async for event in self._stream_openai_compatible(
+            client, request_params, provider_name="github-copilot"
+        ):
+            yield event
+
+    async def _stream_google_gemini_cli(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        api_key: str | None = None,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Stream completion using Google Gemini CLI API."""
+        if not api_key:
+            yield StreamEvent(type="error", error="Google Gemini CLI requires an OAuth token")
+            return
+
+        gemini_model = model.split("/", 1)[1] if "/" in model else model
+        url = f"{GOOGLE_GEMINI_CLI_BASE_URL}/models/{gemini_model}:streamGenerateContent"
+
+        contents = self._convert_messages_to_gemini(messages)
+
+        request_body: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": max_tokens,
+                "temperature": temperature,
+            },
+        }
+
+        if tools:
+            request_body["tools"] = self._convert_tools_to_gemini(tools)
+
+        input_tokens = 0
+        output_tokens = 0
+        accumulated_content = ""
+
+        async with (
+            httpx.AsyncClient() as client,
+            client.stream(
+                "POST",
+                url,
+                json=request_body,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=120.0,
+            ) as response,
+        ):
+            if response.status_code != 200:
+                error_text = await response.aread()
+                yield StreamEvent(type="error", error=f"Gemini API error: {error_text.decode()}")
+                return
+
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
+
+                # Gemini streams JSON objects
+                try:
+                    data = json.loads(line)
+                    candidates = data.get("candidates", [])
+
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        for part in parts:
+                            if "text" in part:
+                                text = part["text"]
+                                accumulated_content += text
+                                yield StreamEvent(type="token", content=text)
+                            elif "functionCall" in part:
+                                fc = part["functionCall"]
+                                yield StreamEvent(
+                                    type="tool_call_start",
+                                    tool_call_id=f"call_{fc['name']}",
+                                    tool_name=fc["name"],
+                                )
+                                yield StreamEvent(
+                                    type="tool_call_end",
+                                    tool_call_id=f"call_{fc['name']}",
+                                    tool_name=fc["name"],
+                                    tool_input=fc.get("args", {}),
+                                )
+
+                    # Get usage metadata
+                    usage_metadata = data.get("usageMetadata", {})
+                    if usage_metadata:
+                        input_tokens = usage_metadata.get("promptTokenCount", input_tokens)
+                        output_tokens = usage_metadata.get("candidatesTokenCount", output_tokens)
+
+                except json.JSONDecodeError:
+                    continue
+
+        yield StreamEvent(
+            type="done",
+            usage={
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+            stop_reason="stop",
+        )
+
+    async def _stream_openai_compatible(
+        self,
+        client: AsyncOpenAI,
+        request_params: dict[str, Any],
+        provider_name: str = "openai-compatible",
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Stream completion using an OpenAI-compatible client.
+
+        Shared implementation for OpenRouter, OpenAI Codex, and GitHub Copilot.
+
+        Args:
+            client: The OpenAI-compatible async client
+            request_params: Request parameters for the completion
+            provider_name: Name of the provider for logging purposes
+        """
+        tool_calls_building: dict[int, dict[str, Any]] = {}
+        usage_data: dict[str, int] = {}
+        finish_reason: str | None = None
+        model = request_params.get("model", "unknown")
+
+        logger.debug(
+            "Starting OpenAI-compatible stream",
+            provider=provider_name,
+            model=model,
+            has_stream_options="stream_options" in request_params,
+        )
+
+        stream = await client.chat.completions.create(**request_params)
+
+        async for chunk in stream:
+            # Check for usage in chunk (can come with or without choices)
+            if chunk.usage:
+                usage_data = {
+                    "input_tokens": chunk.usage.prompt_tokens or 0,
+                    "output_tokens": chunk.usage.completion_tokens or 0,
+                    "total_tokens": chunk.usage.total_tokens or 0,
+                }
+                logger.debug(
+                    "Received usage data in stream chunk",
+                    provider=provider_name,
+                    model=model,
+                    usage=usage_data,
+                    has_choices=bool(chunk.choices),
+                )
+                if not chunk.choices:
+                    continue
+
+            if not chunk.choices:
+                continue
+
+            choice = chunk.choices[0]
+            delta = choice.delta
+
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+
+            if delta.content:
+                yield StreamEvent(type="token", content=delta.content)
+
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_calls_building:
+                        tool_calls_building[idx] = {
+                            "id": tc.id or "",
+                            "name": tc.function.name if tc.function else "",
+                            "arguments": "",
+                        }
+                        if tc.function and tc.function.name:
+                            yield StreamEvent(
+                                type="tool_call_start",
+                                tool_call_id=tc.id,
+                                tool_name=tc.function.name,
+                            )
+
+                    if tc.function and tc.function.arguments:
+                        tool_calls_building[idx]["arguments"] += tc.function.arguments
+
+        for tc_data in tool_calls_building.values():
+            try:
+                tool_input = json.loads(tc_data["arguments"]) if tc_data["arguments"] else {}
+            except json.JSONDecodeError:
+                tool_input = {}
+            yield StreamEvent(
+                type="tool_call_end",
+                tool_call_id=tc_data["id"],
+                tool_name=tc_data["name"],
+                tool_input=tool_input,
+            )
+
+        # Log final usage state
+        if usage_data:
+            logger.info(
+                "Stream completed with usage data",
+                provider=provider_name,
+                model=model,
+                usage=usage_data,
+            )
+        else:
+            logger.warning(
+                "Stream completed WITHOUT usage data - billing will not be tracked",
+                provider=provider_name,
+                model=model,
+            )
+
+        yield StreamEvent(
+            type="done",
+            usage=usage_data,
             stop_reason=finish_reason or "stop",
         )

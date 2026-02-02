@@ -207,6 +207,7 @@ function ProviderFormModal({ provider, onClose, onSave }: ProviderFormModalProps
     name: provider?.name || '',
     description: provider?.description || '',
     icon: provider?.icon || '',
+    logo_url: provider?.logo_url || '',
     color: provider?.color || '#6366f1',
     is_local: provider?.is_local || false,
     default_url: provider?.default_url || '',
@@ -289,7 +290,7 @@ function ProviderFormModal({ provider, onClose, onSave }: ProviderFormModalProps
             />
           </div>
 
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-text-secondary mb-2">Color</label>
               <div className="flex items-center gap-2">
@@ -309,6 +310,20 @@ function ProviderFormModal({ provider, onClose, onSave }: ProviderFormModalProps
             </div>
             <div>
               <label className="block text-sm font-medium text-text-secondary mb-2">
+                Sort Order
+              </label>
+              <input
+                type="number"
+                value={formData.sort_order}
+                onChange={(e) => setFormData({ ...formData, sort_order: parseInt(e.target.value) })}
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-2">
                 Icon (Lucide name)
               </label>
               <input
@@ -320,15 +335,15 @@ function ProviderFormModal({ provider, onClose, onSave }: ProviderFormModalProps
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-text-secondary mb-2">
-                Sort Order
-              </label>
+              <label className="block text-sm font-medium text-text-secondary mb-2">Logo URL</label>
               <input
-                type="number"
-                value={formData.sort_order}
-                onChange={(e) => setFormData({ ...formData, sort_order: parseInt(e.target.value) })}
-                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary focus:outline-none focus:ring-1 focus:ring-accent-primary"
+                type="url"
+                value={formData.logo_url || ''}
+                onChange={(e) => setFormData({ ...formData, logo_url: e.target.value })}
+                placeholder="https://example.com/logo.svg"
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-accent-primary"
               />
+              <p className="text-xs text-text-muted mt-1">If set, overrides the icon</p>
             </div>
           </div>
 

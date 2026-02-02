@@ -2,7 +2,8 @@
 
 Handles OAuth flows for personal plan providers:
 - Anthropic (Claude Pro/Max)
-- Google (Gemini)
+- OpenAI Codex (ChatGPT Plus/Pro)
+- Google (Gemini CLI)
 - GitHub (Copilot)
 """
 
@@ -451,6 +452,9 @@ def _is_provider_configured(provider: str) -> bool:
 
     if provider == "anthropic":
         # Anthropic uses a public client ID, always configured
+        return True
+    if provider == "openai-codex":
+        # OpenAI Codex uses a public client ID (like Anthropic), always configured
         return True
     if provider == "google":
         return bool(

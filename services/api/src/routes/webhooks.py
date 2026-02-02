@@ -16,6 +16,11 @@ from src.database.models import (
     CreditBalance,
     CreditTransaction,
     Invoice,
+    Organization,
+    OrganizationCreditTransaction,
+    OrganizationInvoice,
+    OrganizationMember,
+    OrganizationSubscription,
     SubscriptionPlan,
     UsageQuota,
     User,
@@ -90,6 +95,166 @@ async def _get_or_create_stripe_customer(
     await db.flush()
 
     return str(customer.id)
+
+
+async def _get_org_by_stripe_customer(
+    db: AsyncSession,
+    customer_id: str,
+) -> Organization | None:
+    """Get organization by Stripe customer ID."""
+    result = await db.execute(
+        select(Organization).where(Organization.stripe_customer_id == customer_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _get_org_owner(
+    db: AsyncSession,
+    org_id: str,
+) -> User | None:
+    """Get the owner user for an organization."""
+    result = await db.execute(
+        select(User)
+        .join(OrganizationMember, OrganizationMember.user_id == User.id)
+        .where(OrganizationMember.organization_id == org_id)
+        .where(OrganizationMember.role == "owner")
+    )
+    return result.scalar_one_or_none()
+
+
+async def _sync_org_subscription_from_stripe(
+    db: AsyncSession,
+    org: Organization,
+    stripe_subscription: stripe.Subscription,
+    stripe_event_id: str | None = None,
+) -> OrganizationSubscription:
+    """Create or update organization subscription from Stripe subscription object."""
+    # Get or create subscription record
+    result = await db.execute(
+        select(OrganizationSubscription).where(
+            OrganizationSubscription.stripe_subscription_id == stripe_subscription.id
+        )
+    )
+    subscription = result.scalar_one_or_none()
+
+    # Get plan from Stripe price
+    price_id = stripe_subscription["items"]["data"][0]["price"]["id"]
+    plan_result = await db.execute(
+        select(SubscriptionPlan).where(
+            (SubscriptionPlan.stripe_price_id_monthly == price_id)
+            | (SubscriptionPlan.stripe_price_id_yearly == price_id)
+        )
+    )
+    plan = plan_result.scalar_one_or_none()
+
+    if not plan:
+        logger.warning(
+            "Plan not found for Stripe price",
+            price_id=price_id,
+        )
+        raise HTTPException(status_code=400, detail="Plan not found for Stripe price")
+
+    # Determine billing cycle
+    billing_cycle = "monthly"
+    if price_id == plan.stripe_price_id_yearly:
+        billing_cycle = "yearly"
+
+    # Map Stripe status to our status
+    status_map = {
+        "active": "active",
+        "trialing": "trialing",
+        "past_due": "past_due",
+        "canceled": "canceled",
+        "unpaid": "past_due",
+        "incomplete": "incomplete",
+        "incomplete_expired": "canceled",
+        "paused": "paused",
+    }
+    status = status_map.get(stripe_subscription.status, stripe_subscription.status)
+
+    # Get seat count from subscription quantity
+    seat_count = stripe_subscription["items"]["data"][0].get("quantity", 1)
+
+    is_new = subscription is None
+
+    if subscription:
+        # Update existing subscription
+        subscription.plan_id = plan.id
+        subscription.status = status
+        subscription.billing_cycle = billing_cycle
+        subscription.seat_count = seat_count
+        subscription.current_period_start = datetime.fromtimestamp(
+            stripe_subscription.current_period_start, tz=UTC
+        )
+        subscription.current_period_end = datetime.fromtimestamp(
+            stripe_subscription.current_period_end, tz=UTC
+        )
+        subscription.cancel_at_period_end = stripe_subscription.cancel_at_period_end
+        if stripe_subscription.canceled_at:
+            subscription.canceled_at = datetime.fromtimestamp(
+                stripe_subscription.canceled_at, tz=UTC
+            )
+    else:
+        # Create new subscription
+        subscription = OrganizationSubscription(
+            organization_id=org.id,
+            plan_id=plan.id,
+            stripe_subscription_id=stripe_subscription.id,
+            status=status,
+            billing_cycle=billing_cycle,
+            seat_count=seat_count,
+            current_period_start=datetime.fromtimestamp(
+                stripe_subscription.current_period_start, tz=UTC
+            ),
+            current_period_end=datetime.fromtimestamp(
+                stripe_subscription.current_period_end, tz=UTC
+            ),
+            cancel_at_period_end=stripe_subscription.cancel_at_period_end,
+        )
+        db.add(subscription)
+
+    await db.flush()
+
+    logger.info(
+        "Synced organization subscription from Stripe",
+        org_id=org.id,
+        subscription_id=subscription.id,
+        stripe_subscription_id=stripe_subscription.id,
+        status=status,
+        is_new=is_new,
+    )
+
+    # Send email to org owner for new subscriptions
+    if is_new:
+        owner = await _get_org_owner(db, org.id)
+        if owner and owner.email:
+            try:
+                email_service = get_email_service()
+                await email_service.send_email(
+                    owner.email,
+                    EmailTemplate.SUBSCRIPTION_CREATED,
+                    {
+                        "name": owner.name or "there",
+                        "plan_name": f"{plan.name} (Organization)",
+                        "tokens_included": plan.tokens_included * seat_count,
+                        "compute_credits": (plan.compute_credits_cents_included * seat_count) / 100,
+                        "max_sessions": plan.max_sessions * seat_count,
+                        "storage_gb": plan.storage_gb_included * seat_count,
+                    },
+                )
+                logger.info(
+                    "Sent org subscription created email",
+                    org_id=org.id,
+                    owner_email=owner.email,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to send org subscription email",
+                    org_id=org.id,
+                    error=str(e),
+                )
+
+    return subscription
 
 
 async def _sync_subscription_from_stripe(
@@ -333,8 +498,10 @@ async def handle_checkout_session_completed(
 
     This is fired when a customer completes a checkout session,
     either for a new subscription or a one-time purchase.
+    Supports both user and organization checkouts via metadata.
     """
     session = event.data.object
+    metadata = session.get("metadata", {}) or {}
 
     # Get customer
     customer_id = session.customer
@@ -342,6 +509,54 @@ async def handle_checkout_session_completed(
         logger.warning("Checkout session without customer", session_id=session.id)
         return
 
+    # Check if this is an organization checkout
+    org_id = metadata.get("organization_id")
+    checkout_type = metadata.get("type", "")
+
+    if org_id or checkout_type.startswith("organization_"):
+        # Organization checkout
+        org = await _get_org_by_stripe_customer(db, customer_id)
+        if not org:
+            logger.warning("Organization not found for customer", customer_id=customer_id)
+            return
+
+        # Handle organization subscription checkout
+        if session.mode == "subscription" and session.subscription:
+            stripe_subscription = stripe.Subscription.retrieve(session.subscription)
+            await _sync_org_subscription_from_stripe(db, org, stripe_subscription, event.id)
+            logger.info(
+                "Organization subscription created via checkout",
+                org_id=org.id,
+                subscription_id=session.subscription,
+            )
+
+        # Handle organization credit purchase
+        elif session.mode == "payment":
+            amount_total = session.amount_total  # in cents
+            if amount_total and amount_total > 0:
+                # Add credits to organization pool
+                org.credit_pool_cents += amount_total
+
+                # Create transaction record
+                transaction = OrganizationCreditTransaction(
+                    organization_id=org.id,
+                    amount_cents=amount_total,
+                    transaction_type="purchase",
+                    description=f"Stripe checkout: {session.id}",
+                    stripe_payment_intent_id=session.payment_intent,
+                    pool_balance_after_cents=org.credit_pool_cents,
+                )
+                db.add(transaction)
+
+                logger.info(
+                    "Organization credits purchased",
+                    org_id=org.id,
+                    amount_cents=amount_total,
+                    new_balance=org.credit_pool_cents,
+                )
+        return
+
+    # User checkout (existing behavior)
     user = await _get_user_by_stripe_customer(db, customer_id)
     if not user:
         logger.warning("User not found for customer", customer_id=customer_id)
@@ -418,12 +633,29 @@ async def handle_customer_subscription_created(
     db: AsyncSession,
     event: stripe.Event,
 ) -> None:
-    """Handle new subscription creation."""
+    """Handle new subscription creation for users or organizations."""
     stripe_subscription = event.data.object
     customer_id = stripe_subscription.customer
+    metadata = stripe_subscription.get("metadata", {}) or {}
 
+    # Check if this is an organization subscription
+    org_id = metadata.get("organization_id")
+    if org_id:
+        org = await _get_org_by_stripe_customer(db, customer_id)
+        if not org:
+            logger.warning("Organization not found for customer", customer_id=customer_id)
+            return
+        await _sync_org_subscription_from_stripe(db, org, stripe_subscription, event.id)
+        return
+
+    # User subscription
     user = await _get_user_by_stripe_customer(db, customer_id)
     if not user:
+        # Could be an org customer, try that
+        org = await _get_org_by_stripe_customer(db, customer_id)
+        if org:
+            await _sync_org_subscription_from_stripe(db, org, stripe_subscription, event.id)
+            return
         logger.warning("User not found for customer", customer_id=customer_id)
         return
 
@@ -437,7 +669,66 @@ async def handle_customer_subscription_updated(
     """Handle subscription updates (plan changes, status changes, etc.)."""
     stripe_subscription = event.data.object
     customer_id = stripe_subscription.customer
+    metadata = stripe_subscription.get("metadata", {}) or {}
 
+    # Check if this is an organization subscription
+    org_id = metadata.get("organization_id")
+    if org_id:
+        org = await _get_org_by_stripe_customer(db, customer_id)
+        if not org:
+            logger.warning("Organization not found for customer", customer_id=customer_id)
+            return
+        subscription = await _sync_org_subscription_from_stripe(
+            db, org, stripe_subscription, event.id
+        )
+
+        # Check for billing period change (renewal) - sync member periods
+        previous_attributes = event.data.get("previous_attributes", {})
+        if "current_period_start" in previous_attributes:
+            # Billing period has changed - this is a renewal
+            from src.services.org_limits import OrgLimitsService  # noqa: PLC0415
+
+            org_limits = OrgLimitsService(db)
+            updated_count = await org_limits.sync_all_members_to_new_period(
+                org,
+                subscription.current_period_start,
+                subscription.current_period_end,
+            )
+            logger.info(
+                "Synced member billing periods on org subscription renewal",
+                org_id=org.id,
+                updated_members=updated_count,
+            )
+
+        logger.info(
+            "Organization subscription updated",
+            org_id=org.id,
+            status=stripe_subscription.status,
+        )
+        return
+
+    # Check if customer is an org (fallback)
+    org = await _get_org_by_stripe_customer(db, customer_id)
+    if org:
+        subscription = await _sync_org_subscription_from_stripe(
+            db, org, stripe_subscription, event.id
+        )
+
+        # Also check for billing period change in fallback path
+        previous_attributes = event.data.get("previous_attributes", {})
+        if "current_period_start" in previous_attributes:
+            from src.services.org_limits import OrgLimitsService  # noqa: PLC0415
+
+            org_limits = OrgLimitsService(db)
+            await org_limits.sync_all_members_to_new_period(
+                org,
+                subscription.current_period_start,
+                subscription.current_period_end,
+            )
+
+        return
+
+    # User subscription
     user = await _get_user_by_stripe_customer(db, customer_id)
     if not user:
         logger.warning("User not found for customer", customer_id=customer_id)
@@ -517,13 +808,31 @@ async def handle_customer_subscription_deleted(
     When a paid subscription ends (period expires after cancel_at_period_end),
     Stripe fires this event. We need to:
     1. Mark the old subscription as canceled
-    2. Downgrade user to the free plan
-    3. Update quotas to free plan limits
+    2. Downgrade user to the free plan (for users)
+    3. Update quotas to free plan limits (for users)
     """
     stripe_subscription = event.data.object
     subscription_id = stripe_subscription.id
 
-    # Update subscription status
+    # Check for organization subscription first
+    org_sub_result = await db.execute(
+        select(OrganizationSubscription).where(
+            OrganizationSubscription.stripe_subscription_id == subscription_id
+        )
+    )
+    org_subscription = org_sub_result.scalar_one_or_none()
+
+    if org_subscription:
+        org_subscription.status = "canceled"
+        org_subscription.canceled_at = datetime.now(UTC)
+        logger.info(
+            "Organization subscription canceled",
+            org_id=org_subscription.organization_id,
+            subscription_id=org_subscription.id,
+        )
+        return
+
+    # User subscription
     result = await db.execute(
         select(UserSubscription).where(UserSubscription.stripe_subscription_id == subscription_id)
     )
@@ -610,14 +919,117 @@ async def handle_customer_subscription_deleted(
                 logger.warning("Failed to send cancellation email", user_id=user.id, error=str(e))
 
 
+async def _generate_org_invoice_number(db: AsyncSession, org_id: str) -> str:
+    """Generate a unique invoice number for organization."""
+    from sqlalchemy import func as sqlfunc  # noqa: PLC0415
+
+    result = await db.execute(
+        select(sqlfunc.count(OrganizationInvoice.id)).where(
+            OrganizationInvoice.organization_id == org_id
+        )
+    )
+    count = result.scalar() or 0
+    return f"ORG-INV-{count + 1:06d}"
+
+
 async def handle_invoice_paid(
     db: AsyncSession,
     event: stripe.Event,
 ) -> None:
-    """Handle successful invoice payment."""
+    """Handle successful invoice payment for users or organizations."""
     stripe_invoice = event.data.object
     customer_id = stripe_invoice.customer
 
+    # Check if this is an organization invoice
+    org = await _get_org_by_stripe_customer(db, customer_id)
+    if org:
+        # Handle organization invoice
+        result = await db.execute(
+            select(OrganizationInvoice).where(
+                OrganizationInvoice.stripe_invoice_id == stripe_invoice.id
+            )
+        )
+        invoice = result.scalar_one_or_none()
+
+        if not invoice:
+            invoice_number = await _generate_org_invoice_number(db, org.id)
+
+            invoice = OrganizationInvoice(
+                organization_id=org.id,
+                invoice_number=invoice_number,
+                subtotal_cents=stripe_invoice.subtotal or 0,
+                discount_cents=stripe_invoice.discount or 0
+                if isinstance(stripe_invoice.discount, int)
+                else 0,
+                tax_cents=stripe_invoice.tax or 0,
+                total_cents=stripe_invoice.total or 0,
+                currency=stripe_invoice.currency.upper(),
+                status="paid",
+                stripe_invoice_id=stripe_invoice.id,
+                period_start=datetime.fromtimestamp(stripe_invoice.period_start, tz=UTC)
+                if stripe_invoice.period_start
+                else datetime.now(UTC),
+                period_end=datetime.fromtimestamp(stripe_invoice.period_end, tz=UTC)
+                if stripe_invoice.period_end
+                else datetime.now(UTC) + timedelta(days=30),
+                due_date=datetime.fromtimestamp(stripe_invoice.due_date, tz=UTC)
+                if stripe_invoice.due_date
+                else datetime.now(UTC),
+                paid_at=datetime.now(UTC),
+                line_items=[
+                    {
+                        "description": line.description,
+                        "quantity": line.quantity,
+                        "unit_amount_cents": line.unit_amount,
+                        "amount_cents": line.amount,
+                    }
+                    for line in stripe_invoice.lines.data
+                ],
+                pdf_url=stripe_invoice.invoice_pdf,
+            )
+            db.add(invoice)
+
+        else:
+            invoice.status = "paid"
+            invoice.paid_at = datetime.now(UTC)
+            invoice.pdf_url = stripe_invoice.invoice_pdf
+
+        await db.flush()
+
+        logger.info(
+            "Organization invoice paid",
+            org_id=org.id,
+            invoice_id=invoice.id,
+            amount_cents=stripe_invoice.total,
+        )
+
+        # Send email to org owner
+        owner = await _get_org_owner(db, org.id)
+        if owner and owner.email:
+            try:
+                email_service = get_email_service()
+                await email_service.send_email(
+                    owner.email,
+                    EmailTemplate.PAYMENT_RECEIVED,
+                    {
+                        "name": owner.name or "there",
+                        "amount": (stripe_invoice.total or 0) / 100,
+                        "date": datetime.now(UTC).strftime("%B %d, %Y"),
+                        "invoice_number": invoice.invoice_number,
+                        "invoice_url": f"{settings.FRONTEND_URL}/settings/organization/billing/invoices/{invoice.id}",
+                    },
+                )
+                logger.info("Sent org payment confirmation email", org_id=org.id)
+            except Exception as e:
+                logger.warning(
+                    "Failed to send org payment email",
+                    org_id=org.id,
+                    error=str(e),
+                )
+
+        return
+
+    # User invoice
     user = await _get_user_by_stripe_customer(db, customer_id)
     if not user:
         logger.warning("User not found for customer", customer_id=customer_id)
@@ -711,6 +1123,62 @@ async def handle_invoice_payment_failed(
     """Handle failed invoice payment."""
     stripe_invoice = event.data.object
     customer_id = stripe_invoice.customer
+
+    # Check if this is an organization invoice first
+    org = await _get_org_by_stripe_customer(db, customer_id)
+    if org:
+        # Update org invoice status
+        result = await db.execute(
+            select(OrganizationInvoice).where(
+                OrganizationInvoice.stripe_invoice_id == stripe_invoice.id
+            )
+        )
+        org_invoice = result.scalar_one_or_none()
+
+        if org_invoice:
+            org_invoice.status = "payment_failed"
+            org_invoice.notes = f"Payment failed. Attempt {stripe_invoice.attempt_count}."
+
+        # Update org subscription to past_due if applicable
+        if stripe_invoice.subscription:
+            sub_result = await db.execute(
+                select(OrganizationSubscription).where(
+                    OrganizationSubscription.stripe_subscription_id == stripe_invoice.subscription
+                )
+            )
+            subscription = sub_result.scalar_one_or_none()
+            if subscription:
+                subscription.status = "past_due"
+
+        logger.warning(
+            "Organization invoice payment failed",
+            org_id=org.id,
+            invoice_id=stripe_invoice.id,
+            attempt_count=stripe_invoice.attempt_count,
+        )
+
+        # Send email to org owner about failed payment
+        owner = await _get_org_owner(db, org.id)
+        if owner and owner.email:
+            try:
+                email_service = get_email_service()
+                await email_service.send_email(
+                    owner.email,
+                    EmailTemplate.PAYMENT_FAILED,
+                    {
+                        "name": owner.name or "there",
+                        "amount": (stripe_invoice.total or 0) / 100,
+                    },
+                )
+                logger.info("Sent org payment failure email", org_id=org.id)
+            except Exception as e:
+                logger.warning(
+                    "Failed to send org payment failure email",
+                    org_id=org.id,
+                    error=str(e),
+                )
+
+        return
 
     user = await _get_user_by_stripe_customer(db, customer_id)
     if not user:

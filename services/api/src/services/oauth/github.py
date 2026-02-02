@@ -7,6 +7,7 @@ Provides access to GitHub Copilot APIs when user has Copilot subscription.
 import base64
 import json
 import os
+import re
 import time
 from typing import Any
 from urllib.parse import urlencode
@@ -266,3 +267,103 @@ class GitHubOAuthProvider(OAuthProvider):
                 return response.status_code == 200
         except Exception:
             return False
+
+    async def get_copilot_token(
+        self, access_token: str, enterprise_domain: str | None = None
+    ) -> dict[str, Any] | None:
+        """Get a Copilot completion token from a GitHub OAuth token.
+
+        The GitHub OAuth access_token is used to get a short-lived Copilot token
+        that can be used with the Copilot API at api.individual.githubcopilot.com.
+
+        Args:
+            access_token: GitHub OAuth access token
+            enterprise_domain: Optional GitHub Enterprise domain (e.g., "company.ghe.com")
+
+        Returns:
+            Dict with 'token', 'expires_at', and 'base_url' or None if failed
+        """
+        domain = enterprise_domain or "github.com"
+        copilot_token_url = f"https://api.{domain}/copilot_internal/v2/token"
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    copilot_token_url,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Accept": "application/json",
+                        # Headers from Pi project - required for Copilot API
+                        "User-Agent": "GitHubCopilotChat/0.35.0",
+                        "Editor-Version": "vscode/1.107.0",
+                        "Editor-Plugin-Version": "copilot-chat/0.35.0",
+                        "Copilot-Integration-Id": "vscode-chat",
+                    },
+                    timeout=30.0,
+                )
+
+                if response.status_code != 200:
+                    logger.warning(
+                        "Failed to get Copilot token",
+                        status=response.status_code,
+                        body=response.text,
+                    )
+                    return None
+
+                data = response.json()
+                token = data.get("token")
+                expires_at = data.get("expires_at")
+
+                if not token or not expires_at:
+                    logger.warning("Invalid Copilot token response", data=data)
+                    return None
+
+                # Extract base URL from token's proxy-ep field
+                base_url = self._get_copilot_base_url(token, enterprise_domain)
+
+                return {
+                    "token": token,
+                    "expires_at": expires_at,
+                    "base_url": base_url,
+                }
+
+        except Exception as e:
+            logger.exception("Failed to get Copilot token", error=str(e))
+            return None
+
+    def _get_copilot_base_url(self, token: str, enterprise_domain: str | None = None) -> str:
+        """Extract the API base URL from a Copilot token.
+
+        Copilot tokens contain a proxy-ep field like:
+        tid=...;exp=...;proxy-ep=proxy.individual.githubcopilot.com;...
+
+        We convert proxy.xxx to api.xxx for the API base URL.
+
+        Args:
+            token: Copilot token string
+            enterprise_domain: Optional GitHub Enterprise domain
+
+        Returns:
+            API base URL (e.g., https://api.individual.githubcopilot.com)
+        """
+        match = re.search(r"proxy-ep=([^;]+)", token)
+        if match:
+            proxy_host = match.group(1)
+            # Convert proxy.xxx to api.xxx
+            api_host = re.sub(r"^proxy\.", "api.", proxy_host)
+            return f"https://{api_host}"
+
+        # Fallback for enterprise or if token parsing fails
+        if enterprise_domain:
+            return f"https://copilot-api.{enterprise_domain}"
+
+        return "https://api.individual.githubcopilot.com"
+
+
+# Headers required for GitHub Copilot API calls
+GITHUB_COPILOT_HEADERS = {
+    "User-Agent": "GitHubCopilotChat/0.35.0",
+    "Editor-Version": "vscode/1.107.0",
+    "Editor-Plugin-Version": "copilot-chat/0.35.0",
+    "Copilot-Integration-Id": "vscode-chat",
+}

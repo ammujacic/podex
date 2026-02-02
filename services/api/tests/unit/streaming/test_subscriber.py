@@ -75,7 +75,10 @@ class TestStreamSubscriber:
         """Test subscribing to a session stream."""
         subscriber = StreamSubscriber()
 
-        with patch.object(subscriber, "connect", new_callable=AsyncMock) as mock_connect:
+        with (
+            patch.object(subscriber, "connect", new_callable=AsyncMock) as mock_connect,
+            patch.object(subscriber, "_start_listener"),
+        ):
             mock_pubsub = AsyncMock()
             subscriber._redis = AsyncMock()
             subscriber._pubsub = mock_pubsub

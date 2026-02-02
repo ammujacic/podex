@@ -62,7 +62,7 @@ class ProviderRegistry:
         """Get the appropriate provider for a model ID."""
         # Check if model has explicit provider prefix
         if ":" in model:
-            provider_name = model.split(":")[0]
+            provider_name = model.split(":", maxsplit=1)[0]
             if provider_name in self._providers:
                 return provider_name, self._providers[provider_name]
 

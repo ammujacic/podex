@@ -29,6 +29,7 @@ import {
   Smartphone,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { QuotaAlertProvider } from '@/components/billing';
 
 const settingsNavItems = [
   { href: '/settings', label: 'General', icon: Settings },
@@ -237,12 +238,12 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
         {/* Main content - on mobile only show when sub-nav is active */}
         <main
           className={cn(
-            'flex-1 overflow-y-auto',
+            'flex-1 overflow-y-auto flex flex-col',
             'md:block',
             showSubNav ? 'block pt-[57px] md:pt-0' : 'hidden'
           )}
         >
-          {children}
+          <QuotaAlertProvider>{children}</QuotaAlertProvider>
         </main>
       </div>
     </SettingsMobileContext.Provider>

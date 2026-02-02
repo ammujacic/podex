@@ -28,13 +28,10 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 # Mapping of request field names to config attribute names
 CONFIG_FIELD_MAP = [
     "default_shell",
-    "default_editor",
     "git_name",
     "git_email",
     "default_template_id",
     "theme",
-    "editor_theme",
-    "default_standby_timeout_minutes",
     "custom_keybindings",
     "editor_settings",
     "ui_preferences",
@@ -74,13 +71,10 @@ class UserConfigResponse(BaseModel):
     id: str
     user_id: str
     default_shell: str
-    default_editor: str
     git_name: str | None
     git_email: str | None
     default_template_id: str | None
     theme: str
-    editor_theme: str
-    default_standby_timeout_minutes: int | None  # None = Never
     custom_keybindings: dict[str, Any] | None
     editor_settings: dict[str, Any] | None
     ui_preferences: dict[str, Any] | None
@@ -92,13 +86,10 @@ class UpdateUserConfigRequest(BaseModel):
     """Request to update user config."""
 
     default_shell: str | None = None
-    default_editor: str | None = None
     git_name: str | None = None
     git_email: str | None = None
     default_template_id: str | None = None
     theme: str | None = None
-    editor_theme: str | None = None
-    default_standby_timeout_minutes: int | None = None
     custom_keybindings: dict[str, Any] | None = None
     editor_settings: dict[str, Any] | None = None
     ui_preferences: dict[str, Any] | None = None
@@ -148,13 +139,10 @@ async def get_user_config(
         id=config.id,
         user_id=config.user_id,
         default_shell=config.default_shell,
-        default_editor=config.default_editor,
         git_name=config.git_name,
         git_email=config.git_email,
         default_template_id=config.default_template_id,
         theme=config.theme,
-        editor_theme=config.editor_theme,
-        default_standby_timeout_minutes=config.default_standby_timeout_minutes,
         custom_keybindings=config.custom_keybindings,
         editor_settings=config.editor_settings,
         ui_preferences=config.ui_preferences,
@@ -211,13 +199,10 @@ async def update_user_config(
         id=config.id,
         user_id=config.user_id,
         default_shell=config.default_shell,
-        default_editor=config.default_editor,
         git_name=config.git_name,
         git_email=config.git_email,
         default_template_id=config.default_template_id,
         theme=config.theme,
-        editor_theme=config.editor_theme,
-        default_standby_timeout_minutes=config.default_standby_timeout_minutes,
         custom_keybindings=config.custom_keybindings,
         editor_settings=config.editor_settings,
         ui_preferences=config.ui_preferences,
@@ -524,7 +509,7 @@ async def remove_llm_api_key(
     current_keys = config.llm_api_keys or {}
     if provider_lower in current_keys:
         del current_keys[provider_lower]
-        config.llm_api_keys = current_keys if current_keys else None
+        config.llm_api_keys = current_keys or None
         await db.commit()
         await db.refresh(config)
 

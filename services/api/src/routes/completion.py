@@ -227,6 +227,7 @@ async def _record_editor_usage(
                     base_cost_cents=input_cost_cents,
                     total_cost_cents=input_cost_cents,
                     model=result.model,
+                    provider=result.provider,
                     usage_source=result.usage_source,
                     is_overage=False,
                 )
@@ -244,6 +245,7 @@ async def _record_editor_usage(
                     base_cost_cents=output_cost_cents,
                     total_cost_cents=output_cost_cents,
                     model=result.model,
+                    provider=result.provider,
                     usage_source=result.usage_source,
                     is_overage=False,
                 )

@@ -403,7 +403,7 @@ async def _cancel_session_cleanup(session_id: str) -> None:
         )
         key = CLEANUP_PENDING_SESSION_KEY.format(session_id=session_id)
         await redis.delete(key)
-        await redis.close()
+        await redis.aclose()  # type: ignore[attr-defined]
     except Exception as e:
         logger.warning("Failed to clear session cleanup flag", error=str(e))
 
@@ -427,7 +427,7 @@ async def _cancel_terminal_cleanup(workspace_id: str) -> None:
         )
         key = CLEANUP_PENDING_TERMINAL_KEY.format(workspace_id=workspace_id)
         await redis.delete(key)
-        await redis.close()
+        await redis.aclose()  # type: ignore[attr-defined]
     except Exception as e:
         logger.warning("Failed to clear terminal cleanup flag", error=str(e))
 
@@ -450,7 +450,7 @@ async def _deferred_session_cleanup(session_id: str) -> None:
         if not await redis.exists(key):
             # Cleanup was cancelled by another worker
             logger.debug("Session cleanup cancelled via Redis flag", session_id=session_id)
-            await redis.close()
+            await redis.aclose()  # type: ignore[attr-defined]
             return
 
         # Double-check room is still empty after grace period (local check)
@@ -462,7 +462,7 @@ async def _deferred_session_cleanup(session_id: str) -> None:
 
         # Clean up the flag
         await redis.delete(key)
-        await redis.close()
+        await redis.aclose()  # type: ignore[attr-defined]
 
     except asyncio.CancelledError:
         # Cleanup was cancelled because someone joined
@@ -489,7 +489,7 @@ async def _deferred_terminal_cleanup(workspace_id: str) -> None:
         if not await redis.exists(key):
             # Cleanup was cancelled by another worker
             logger.debug("Terminal cleanup cancelled via Redis flag", workspace_id=workspace_id)
-            await redis.close()
+            await redis.aclose()  # type: ignore[attr-defined]
             return
 
         # Double-check room is still empty after grace period (local check)
@@ -501,7 +501,7 @@ async def _deferred_terminal_cleanup(workspace_id: str) -> None:
 
         # Clean up the flag
         await redis.delete(key)
-        await redis.close()
+        await redis.aclose()  # type: ignore[attr-defined]
 
     except asyncio.CancelledError:
         # Cleanup was cancelled because someone attached
@@ -524,7 +524,7 @@ async def _schedule_session_cleanup(session_id: str) -> None:
         )
         key = CLEANUP_PENDING_SESSION_KEY.format(session_id=session_id)
         await redis.setex(key, int(CLEANUP_GRACE_PERIOD + 5), "pending")
-        await redis.close()
+        await redis.aclose()  # type: ignore[attr-defined]
     except Exception as e:
         logger.warning("Failed to set session cleanup flag", error=str(e))
 
@@ -547,7 +547,7 @@ async def _schedule_terminal_cleanup(workspace_id: str) -> None:
         )
         key = CLEANUP_PENDING_TERMINAL_KEY.format(workspace_id=workspace_id)
         await redis.setex(key, int(CLEANUP_GRACE_PERIOD + 5), "pending")
-        await redis.close()
+        await redis.aclose()  # type: ignore[attr-defined]
     except Exception as e:
         logger.warning("Failed to set terminal cleanup flag", error=str(e))
 
@@ -564,7 +564,7 @@ _redis_manager = socketio.AsyncRedisManager(settings.REDIS_URL)
 sio = socketio.AsyncServer(
     async_mode="asgi",
     client_manager=_redis_manager,
-    cors_allowed_origins=settings.CORS_ORIGINS if settings.CORS_ORIGINS else "*",
+    cors_allowed_origins=settings.CORS_ORIGINS or "*",
     cors_credentials=True,  # Required to send cookies cross-origin
     logger=False,
     engineio_logger=False,
@@ -1306,7 +1306,7 @@ async def _add_to_terminal_history(workspace_id: str, output: str) -> None:
         # Refresh TTL
         await redis.expire(key, TERMINAL_HISTORY_TTL)
 
-        await redis.close()
+        await redis.aclose()  # type: ignore[attr-defined]
     except Exception as e:
         logger.warning("Failed to add terminal history to Redis", error=str(e))
 
@@ -1333,7 +1333,7 @@ async def get_terminal_history(workspace_id: str, limit: int = 100) -> list[dict
 
         # Get last 'limit' entries
         entries = await redis.lrange(key, -limit, -1)
-        await redis.close()
+        await redis.aclose()  # type: ignore[attr-defined]
 
         return [json.loads(e) for e in entries]
     except Exception as e:
@@ -1351,7 +1351,7 @@ async def clear_terminal_history(workspace_id: str) -> None:
         )
         key = TERMINAL_HISTORY_KEY.format(workspace_id=workspace_id)
         await redis.delete(key)
-        await redis.close()
+        await redis.aclose()  # type: ignore[attr-defined]
     except Exception as e:
         logger.warning("Failed to clear terminal history from Redis", error=str(e))
 
@@ -1714,7 +1714,7 @@ async def _transcribe_audio_chunks(chunks: list[str], language: str = "en-US") -
 
     try:
         # Extract language code (e.g., "en" from "en-US")
-        lang_code = language.split("-")[0] if language else "en"
+        lang_code = language.split("-", maxsplit=1)[0] if language else "en"
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(

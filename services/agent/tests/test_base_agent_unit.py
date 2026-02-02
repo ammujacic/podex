@@ -1615,7 +1615,7 @@ class TestAgentUsageTracking:
             assert call_args.usage_source == "local"
 
     async def test_tracks_usage_for_vertex_provider(self, mock_llm_provider: MagicMock):
-        """Test usage tracking for vertex provider (included)."""
+        """Test usage tracking for vertex provider (external - user's own GCP credentials)."""
         config = AgentConfig(
             agent_id="test-agent",
             model="gemini-pro",
@@ -1640,9 +1640,9 @@ class TestAgentUsageTracking:
 
             await agent.execute("Test", persist=False)
 
-            # Should track as included
+            # Should track as external (user's own GCP credentials)
             call_args = mock_tracker.return_value.record_token_usage.call_args[0][0]
-            assert call_args.usage_source == "included"
+            assert call_args.usage_source == "external"
 
 
 class TestModeSwitchEvent:

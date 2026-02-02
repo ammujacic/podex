@@ -320,7 +320,7 @@ class CheckoutCreditsRequest(BaseModel):
 class CheckoutResponse(BaseModel):
     """Response containing checkout session URL."""
 
-    checkout_url: str
+    url: str
     session_id: str
 
 
@@ -328,6 +328,25 @@ class PortalResponse(BaseModel):
     """Response containing customer portal URL."""
 
     portal_url: str
+
+
+class PaymentMethodResponse(BaseModel):
+    """Response containing a payment method."""
+
+    id: str
+    type: str  # 'card', 'bank_account', etc.
+    brand: str | None = None  # 'visa', 'mastercard', etc.
+    last4: str | None = None
+    exp_month: int | None = None
+    exp_year: int | None = None
+    is_default: bool = False
+
+
+class PaymentMethodsListResponse(BaseModel):
+    """Response containing list of payment methods."""
+
+    payment_methods: list[PaymentMethodResponse]
+    default_payment_method_id: str | None = None
 
 
 class RefundRequest(BaseModel):
@@ -1934,7 +1953,7 @@ async def create_subscription_checkout(
     await db.flush()
 
     return CheckoutResponse(
-        checkout_url=session.url or "",
+        url=session.url or "",
         session_id=session.id,
     )
 
@@ -2008,7 +2027,7 @@ async def create_credits_checkout(
     await db.flush()
 
     return CheckoutResponse(
-        checkout_url=session.url or "",
+        url=session.url or "",
         session_id=session.id,
     )
 
@@ -2047,6 +2066,63 @@ async def create_customer_portal_session(
         raise HTTPException(status_code=500, detail="Failed to create portal session") from e
 
     return PortalResponse(portal_url=portal_session.url)
+
+
+@router.get("/payment-methods", response_model=PaymentMethodsListResponse)
+@limiter.limit(RATE_LIMIT_STANDARD)
+async def list_payment_methods(
+    request: Request,
+    response: Response,
+    db: DbSession,
+) -> PaymentMethodsListResponse:
+    """List user's saved payment methods from Stripe.
+
+    Returns all payment methods attached to the customer's Stripe account,
+    including cards and bank accounts.
+    """
+    if not settings.STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=503, detail="Stripe not configured")
+
+    user_id = get_current_user_id(request)
+    user = await get_user_by_id(db, user_id)
+
+    if not user.stripe_customer_id:
+        # User has no Stripe customer yet, return empty list
+        return PaymentMethodsListResponse(payment_methods=[], default_payment_method_id=None)
+
+    try:
+        # Get customer to find default payment method
+        customer = stripe.Customer.retrieve(user.stripe_customer_id)
+        default_pm_id = customer.get("invoice_settings", {}).get("default_payment_method")
+
+        # List all payment methods for the customer
+        payment_methods_response = stripe.PaymentMethod.list(
+            customer=user.stripe_customer_id,
+            type="card",
+        )
+
+        payment_methods: list[PaymentMethodResponse] = []
+        for pm in payment_methods_response.data:
+            card = pm.get("card", {})
+            payment_methods.append(
+                PaymentMethodResponse(
+                    id=pm.id,
+                    type=pm.type,
+                    brand=card.get("brand"),
+                    last4=card.get("last4"),
+                    exp_month=card.get("exp_month"),
+                    exp_year=card.get("exp_year"),
+                    is_default=pm.id == default_pm_id,
+                )
+            )
+
+        return PaymentMethodsListResponse(
+            payment_methods=payment_methods,
+            default_payment_method_id=default_pm_id,
+        )
+    except stripe.error.StripeError as e:
+        logger.exception("Failed to list payment methods", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to list payment methods") from e
 
 
 @router.post("/refunds", response_model=RefundResponse)
@@ -3174,6 +3250,9 @@ class UsageEventInput(BaseModel):
     unit_price_cents: int = Field(..., ge=0, le=settings.MAX_COST_CENTS)
     total_cost_cents: int = Field(..., ge=0, le=settings.MAX_COST_CENTS)
     model: str | None = Field(default=None, max_length=100)
+    provider: str | None = Field(
+        default=None, max_length=50
+    )  # LLM provider (anthropic, openai, etc)
     input_tokens: int | None = Field(default=None, ge=0, le=settings.MAX_QUANTITY_TOKENS)
     output_tokens: int | None = Field(default=None, ge=0, le=settings.MAX_QUANTITY_TOKENS)
     tier: str | None = Field(default=None, max_length=50)
@@ -3851,6 +3930,7 @@ async def _record_single_event(
                         base_cost_cents=input_base,
                         total_cost_cents=input_total,
                         model=event.model,
+                        provider=event.provider,
                         usage_source=usage_source,
                         is_overage=is_overage,
                         record_metadata=event.metadata,
@@ -3874,6 +3954,7 @@ async def _record_single_event(
                         base_cost_cents=output_base,
                         total_cost_cents=output_total,
                         model=event.model,
+                        provider=event.provider,
                         usage_source=usage_source,
                         is_overage=is_overage,
                         record_metadata=event.metadata,

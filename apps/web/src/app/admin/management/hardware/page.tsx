@@ -30,6 +30,15 @@ function EditHardwareModal({ spec, onClose, onSave }: EditHardwareModalProps) {
     gpu_type: spec.gpu_type || '',
     gpu_memory_gb: spec.gpu_memory_gb || 0,
     gpu_count: spec.gpu_count || 0,
+    // New fields
+    is_gpu: spec.is_gpu || false,
+    requires_gke: spec.requires_gke || false,
+    is_available: spec.is_available,
+    architecture: spec.architecture || 'x86_64',
+    region_availability: spec.region_availability?.join(', ') || '',
+    machine_type: spec.machine_type || '',
+    cpu_millicores: spec.cpu_millicores || '',
+    sort_order: spec.sort_order || 0,
   });
   const [saving, setSaving] = useState(false);
 
@@ -50,6 +59,19 @@ function EditHardwareModal({ spec, onClose, onSave }: EditHardwareModalProps) {
         gpu_type: formData.gpu_type || null,
         gpu_memory_gb: formData.gpu_memory_gb || null,
         gpu_count: formData.gpu_count || 0,
+        // New fields
+        is_gpu: formData.is_gpu,
+        requires_gke: formData.requires_gke,
+        is_available: formData.is_available,
+        region_availability: formData.region_availability
+          ? formData.region_availability
+              .split(',')
+              .map((s: string) => s.trim())
+              .filter(Boolean)
+          : null,
+        machine_type: formData.machine_type || null,
+        cpu_millicores: formData.cpu_millicores ? Number(formData.cpu_millicores) : null,
+        sort_order: formData.sort_order,
       });
       onClose();
     } catch {
@@ -192,6 +214,100 @@ function EditHardwareModal({ spec, onClose, onSave }: EditHardwareModalProps) {
                   min={0}
                 />
               </div>
+            </div>
+          </div>
+
+          {/* Configuration Flags */}
+          <div className="border-t border-border-subtle pt-4">
+            <h3 className="text-sm font-medium text-text-secondary mb-3">Configuration</h3>
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">Architecture</label>
+                <select
+                  value={formData.architecture}
+                  onChange={(e) => setFormData({ ...formData, architecture: e.target.value })}
+                  className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                >
+                  <option value="x86_64">x86_64</option>
+                  <option value="arm64">arm64</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">Sort Order</label>
+                <input
+                  type="number"
+                  value={formData.sort_order}
+                  onChange={(e) =>
+                    setFormData({ ...formData, sort_order: parseInt(e.target.value) || 0 })
+                  }
+                  className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                  min={0}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">Machine Type (GCP)</label>
+                <input
+                  type="text"
+                  value={formData.machine_type}
+                  onChange={(e) => setFormData({ ...formData, machine_type: e.target.value })}
+                  className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                  placeholder="e.g., n2-standard-4"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-secondary mb-1">CPU Millicores</label>
+                <input
+                  type="number"
+                  value={formData.cpu_millicores}
+                  onChange={(e) => setFormData({ ...formData, cpu_millicores: e.target.value })}
+                  className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                  placeholder="e.g., 4000 for 4 cores"
+                  min={0}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm text-text-secondary mb-1">
+                Region Availability (comma-separated)
+              </label>
+              <input
+                type="text"
+                value={formData.region_availability}
+                onChange={(e) => setFormData({ ...formData, region_availability: e.target.value })}
+                className="w-full px-3 py-2 bg-elevated border border-border-subtle rounded-lg text-text-primary"
+                placeholder="us-central1, us-east1, europe-west1"
+              />
+            </div>
+            <div className="flex gap-6 mt-4">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={formData.is_gpu}
+                  onChange={(e) => setFormData({ ...formData, is_gpu: e.target.checked })}
+                  className="rounded border-border-subtle"
+                />
+                <span className="text-sm text-text-secondary">Is GPU Tier</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={formData.requires_gke}
+                  onChange={(e) => setFormData({ ...formData, requires_gke: e.target.checked })}
+                  className="rounded border-border-subtle"
+                />
+                <span className="text-sm text-text-secondary">Requires GKE</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={formData.is_available}
+                  onChange={(e) => setFormData({ ...formData, is_available: e.target.checked })}
+                  className="rounded border-border-subtle"
+                />
+                <span className="text-sm text-text-secondary">Available</span>
+              </label>
             </div>
           </div>
 

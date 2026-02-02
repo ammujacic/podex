@@ -918,7 +918,7 @@ async def list_files(
 
 def get_language_from_path(path: str) -> str:
     """Determine language from file extension."""
-    extension = path.split(".")[-1].lower()
+    extension = path.rsplit(".", maxsplit=1)[-1].lower()
     language_map = {
         "tsx": "typescript",
         "ts": "typescript",

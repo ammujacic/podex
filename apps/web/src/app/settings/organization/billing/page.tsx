@@ -15,7 +15,13 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { Button } from '@podex/ui';
-import { api } from '@/lib/api';
+import {
+  getOrgBillingSummary,
+  getOrgPaymentMethods,
+  createOrgCreditsCheckout,
+  createOrgPortalSession,
+  type PaymentMethodsListResponse,
+} from '@/lib/api';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
 import { useIsOrgOwner, useOrgContext } from '@/stores/organization';
 import Link from 'next/link';
@@ -41,13 +47,6 @@ interface BillingSummary {
   }[];
 }
 
-interface ApiTopSpender {
-  user_id: string;
-  name: string | null;
-  email: string;
-  spending_cents: number;
-}
-
 export default function OrganizationBillingPage() {
   useDocumentTitle('Organization Billing');
   const router = useRouter();
@@ -59,6 +58,8 @@ export default function OrganizationBillingPage() {
   const [showPurchaseModal, setShowPurchaseModal] = useState(false);
   const [purchaseAmount, setPurchaseAmount] = useState<number>(5000);
   const [purchaseLoading, setPurchaseLoading] = useState(false);
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethodsListResponse | null>(null);
+  const [portalLoading, setPortalLoading] = useState(false);
 
   // Redirect if not owner
   useEffect(() => {
@@ -67,31 +68,26 @@ export default function OrganizationBillingPage() {
     }
   }, [isOwner, orgContext, router]);
 
-  // Fetch billing summary on mount
+  // Fetch billing summary and payment methods on mount
   useEffect(() => {
-    const fetchSummary = async () => {
+    const fetchData = async () => {
       if (!orgContext) return;
       setLoading(true);
       try {
-        // Fetch billing summary from API
-        const response = (await api.get(
-          `/api/organizations/${orgContext.organization.id}/billing/summary`
-        )) as {
-          period_start: string;
-          period_end: string;
-          total_spending_cents: number;
-          credit_pool_cents: number;
-          member_count: number;
-          top_users?: ApiTopSpender[];
-        };
+        // Fetch billing summary and payment methods in parallel
+        const [summaryResponse, paymentMethodsResponse] = await Promise.all([
+          getOrgBillingSummary(orgContext.organization.id),
+          getOrgPaymentMethods(orgContext.organization.id).catch(() => null),
+        ]);
+
         setSummary({
-          currentPeriodStart: response.period_start,
-          currentPeriodEnd: response.period_end,
-          totalSpendingCents: response.total_spending_cents,
-          creditPoolCents: response.credit_pool_cents,
-          memberCount: response.member_count,
+          currentPeriodStart: summaryResponse.period_start,
+          currentPeriodEnd: summaryResponse.period_end,
+          totalSpendingCents: summaryResponse.total_spending_cents,
+          creditPoolCents: summaryResponse.credit_pool_cents,
+          memberCount: summaryResponse.member_count,
           topSpenders:
-            response.top_users?.map((user: ApiTopSpender) => ({
+            summaryResponse.top_users?.map((user) => ({
               userId: user.user_id,
               name: user.name,
               email: user.email,
@@ -99,11 +95,12 @@ export default function OrganizationBillingPage() {
             })) || [],
           recentTransactions: [],
         });
+        setPaymentMethods(paymentMethodsResponse);
       } finally {
         setLoading(false);
       }
     };
-    fetchSummary();
+    fetchData();
   }, [orgContext]);
 
   const formatCents = (cents: number) => {
@@ -125,19 +122,29 @@ export default function OrganizationBillingPage() {
     if (!orgContext) return;
     setPurchaseLoading(true);
     try {
-      // Create Stripe checkout session for organization credits purchase
-      const session = (await api.post(
-        `/api/organizations/${orgContext.organization.id}/billing/checkout/credits`,
-        {
-          amount_cents: purchaseAmount * 100,
-          success_url: `${window.location.origin}/settings/organization/billing?success=true`,
-          cancel_url: `${window.location.origin}/settings/organization/billing`,
-        }
-      )) as { url: string; session_id: string };
-      // Redirect to Stripe Checkout
+      const session = await createOrgCreditsCheckout(
+        orgContext.organization.id,
+        purchaseAmount * 100,
+        `${window.location.origin}/settings/organization/billing?success=true`,
+        `${window.location.origin}/settings/organization/billing`
+      );
       window.location.href = session.url;
     } finally {
       setPurchaseLoading(false);
+    }
+  };
+
+  const handleOpenPortal = async () => {
+    if (!orgContext) return;
+    setPortalLoading(true);
+    try {
+      const response = await createOrgPortalSession(
+        orgContext.organization.id,
+        `${window.location.origin}/settings/organization/billing`
+      );
+      window.location.href = response.url;
+    } finally {
+      setPortalLoading(false);
     }
   };
 
@@ -238,6 +245,67 @@ export default function OrganizationBillingPage() {
                   {formatDate(summary.currentPeriodEnd)}
                 </p>
               </div>
+            </div>
+          </section>
+
+          {/* Payment Methods */}
+          <section className="mb-8">
+            <div className="bg-surface border border-border-default rounded-xl p-5">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <CreditCard className="w-5 h-5 text-text-muted" />
+                  <h2 className="font-medium text-text-primary">Payment Methods</h2>
+                </div>
+                <button
+                  onClick={handleOpenPortal}
+                  disabled={portalLoading}
+                  className="px-3 py-1.5 bg-elevated hover:bg-overlay text-text-primary rounded-lg transition-colors font-medium disabled:opacity-50 flex items-center gap-2 text-sm"
+                >
+                  {portalLoading && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {portalLoading ? 'Opening...' : 'Manage'}
+                </button>
+              </div>
+
+              {paymentMethods && paymentMethods.payment_methods.length > 0 ? (
+                <div className="space-y-3">
+                  {paymentMethods.payment_methods.map((pm) => (
+                    <div
+                      key={pm.id}
+                      className="flex items-center justify-between p-4 bg-elevated rounded-lg border border-border-subtle"
+                    >
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-7 bg-overlay rounded flex items-center justify-center">
+                          <span className="text-xs font-bold text-text-muted uppercase">
+                            {pm.brand || pm.type}
+                          </span>
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium text-text-primary">
+                            {pm.brand
+                              ? pm.brand.charAt(0).toUpperCase() + pm.brand.slice(1)
+                              : pm.type}{' '}
+                            ending in {pm.last4}
+                          </p>
+                          {pm.exp_month && pm.exp_year && (
+                            <p className="text-xs text-text-muted">
+                              Expires {pm.exp_month.toString().padStart(2, '0')}/{pm.exp_year}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      {pm.is_default && (
+                        <span className="px-2 py-1 text-xs font-medium bg-accent-primary/20 text-accent-primary rounded">
+                          Default
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-text-muted">
+                  No payment methods on file. Add one to enable purchases.
+                </p>
+              )}
             </div>
           </section>
 
@@ -432,22 +500,9 @@ export default function OrganizationBillingPage() {
                 />
               </div>
               <div className="bg-elevated rounded-lg p-4">
-                <div className="flex justify-between text-sm">
-                  <span className="text-text-muted">Amount</span>
-                  <span className="text-text-primary">{formatCents(purchaseAmount * 100)}</span>
-                </div>
-                <div className="flex justify-between text-sm mt-1">
-                  <span className="text-text-muted">Processing fee (3%)</span>
-                  <span className="text-text-primary">
-                    {formatCents(purchaseAmount * 100 * 0.03)}
-                  </span>
-                </div>
-                <div className="border-t border-border-subtle my-2" />
                 <div className="flex justify-between font-medium">
                   <span className="text-text-primary">Total</span>
-                  <span className="text-text-primary">
-                    {formatCents(purchaseAmount * 100 * 1.03)}
-                  </span>
+                  <span className="text-text-primary">{formatCents(purchaseAmount * 100)}</span>
                 </div>
               </div>
             </div>

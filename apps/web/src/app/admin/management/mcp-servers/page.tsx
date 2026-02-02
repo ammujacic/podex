@@ -382,7 +382,7 @@ interface MCPServerFormModalProps {
 
 function MCPServerFormModal({ server, onClose, onSave }: MCPServerFormModalProps) {
   const isNew = !server;
-  const [formData, setFormData] = useState<CreateAdminMCPServerRequest>({
+  const [formData, setFormData] = useState<CreateAdminMCPServerRequest & { is_enabled?: boolean }>({
     slug: server?.slug || '',
     name: server?.name || '',
     description: server?.description || '',
@@ -396,6 +396,7 @@ function MCPServerFormModal({ server, onClose, onSave }: MCPServerFormModalProps
     optional_env: server?.optional_env || [],
     icon: server?.icon || '',
     is_builtin: server?.is_builtin || false,
+    is_enabled: server?.is_enabled ?? true,
     docs_url: server?.docs_url || '',
     sort_order: server?.sort_order || 100,
   });
@@ -427,6 +428,7 @@ function MCPServerFormModal({ server, onClose, onSave }: MCPServerFormModalProps
           updateData.optional_env = formData.optional_env;
         if (formData.icon !== server.icon) updateData.icon = formData.icon;
         if (formData.is_builtin !== server.is_builtin) updateData.is_builtin = formData.is_builtin;
+        if (formData.is_enabled !== server.is_enabled) updateData.is_enabled = formData.is_enabled;
         if (formData.docs_url !== server.docs_url) updateData.docs_url = formData.docs_url;
         if (formData.sort_order !== server.sort_order) updateData.sort_order = formData.sort_order;
 
@@ -601,6 +603,28 @@ function MCPServerFormModal({ server, onClose, onSave }: MCPServerFormModalProps
               onChange={(optional_env) => setFormData({ ...formData, optional_env })}
               placeholder="GITHUB_ORG"
             />
+            <div>
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                Default Environment Values (JSON)
+              </label>
+              <textarea
+                value={JSON.stringify(formData.env_vars || {}, null, 2)}
+                onChange={(e) => {
+                  try {
+                    const parsed = JSON.parse(e.target.value);
+                    setFormData({ ...formData, env_vars: parsed });
+                  } catch {
+                    // Allow invalid JSON while typing
+                  }
+                }}
+                rows={4}
+                placeholder='{"KEY": "value"}'
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-accent-primary font-mono text-sm resize-none"
+              />
+              <p className="text-xs text-text-muted mt-1">
+                Default values for environment variables
+              </p>
+            </div>
           </div>
 
           {/* Additional Info */}
@@ -633,7 +657,16 @@ function MCPServerFormModal({ server, onClose, onSave }: MCPServerFormModalProps
           </div>
 
           {/* Flags */}
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-6 flex-wrap">
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={formData.is_enabled ?? true}
+                onChange={(e) => setFormData({ ...formData, is_enabled: e.target.checked })}
+                className="w-4 h-4 rounded border-border-subtle bg-elevated text-accent-primary focus:ring-accent-primary"
+              />
+              <span className="text-sm text-text-secondary">Enabled (visible to users)</span>
+            </label>
             <label className="flex items-center gap-3 cursor-pointer">
               <input
                 type="checkbox"

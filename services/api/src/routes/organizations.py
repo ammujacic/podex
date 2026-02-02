@@ -44,7 +44,7 @@ from src.middleware.organization import (
 )
 from src.middleware.rate_limit import RATE_LIMIT_STANDARD, limiter
 from src.services.email import EmailTemplate, get_email_service
-from src.services.org_limits import OrgLimitsService
+from src.services.org_limits import OrgLimitsService, SeatLimitExceededError
 
 logger = structlog.get_logger()
 
@@ -1050,6 +1050,21 @@ async def send_invitation(
     ctx: OrgContext = request.state.org_context
     org = ctx.organization
 
+    # Check seat availability before sending invitation
+    try:
+        org_limits = OrgLimitsService(db)
+        await org_limits.check_seat_availability(org)
+    except SeatLimitExceededError as e:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "seat_limit_exceeded",
+                "message": str(e),
+                "current_members": e.current_members,
+                "max_seats": e.max_seats,
+            },
+        )
+
     # Validate business email
     validate_invite_email(data.email, org.blocked_email_domains)
 
@@ -1385,6 +1400,22 @@ async def join_via_invitation(
             detail="You are already a member of an organization",
         )
 
+    # Check seat availability before accepting
+    org = invitation.organization
+    try:
+        org_limits = OrgLimitsService(db)
+        await org_limits.check_seat_availability(org)
+    except SeatLimitExceededError as e:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "seat_limit_exceeded",
+                "message": str(e),
+                "current_members": e.current_members,
+                "max_seats": e.max_seats,
+            },
+        )
+
     # Create membership
     member = OrganizationMember(
         organization_id=invitation.organization_id,
@@ -1497,6 +1528,21 @@ async def join_via_link(
         raise HTTPException(
             status_code=400,
             detail="You are already a member of an organization",
+        )
+
+    # Check seat availability
+    try:
+        org_limits = OrgLimitsService(db)
+        await org_limits.check_seat_availability(org)
+    except SeatLimitExceededError as e:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "seat_limit_exceeded",
+                "message": str(e),
+                "current_members": e.current_members,
+                "max_seats": e.max_seats,
+            },
         )
 
     # Create membership
@@ -1637,6 +1683,21 @@ async def join_via_domain(
         raise HTTPException(
             status_code=400,
             detail="You are already a member of an organization",
+        )
+
+    # Check seat availability
+    try:
+        org_limits = OrgLimitsService(db)
+        await org_limits.check_seat_availability(org)
+    except SeatLimitExceededError as e:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "seat_limit_exceeded",
+                "message": str(e),
+                "current_members": e.current_members,
+                "max_seats": e.max_seats,
+            },
         )
 
     # Create membership

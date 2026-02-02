@@ -265,6 +265,7 @@ class UsageRecord(Base):
 
     # Context
     model: Mapped[str | None] = mapped_column(String(100))  # For token usage
+    provider: Mapped[str | None] = mapped_column(String(50), index=True)  # LLM provider
     tier: Mapped[str | None] = mapped_column(String(50))  # For compute usage
 
     # Usage source: "included" (Vertex/platform), "external" (user API key),

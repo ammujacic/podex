@@ -61,6 +61,12 @@ class UpdateAgentRoleConfigRequest(BaseModel):
     description: str | None = None
     system_prompt: str | None = Field(None, min_length=10)
     tools: list[str] | None = None
+    category: str | None = Field(None, max_length=50)
+    gradient_start: str | None = Field(None, max_length=20)
+    gradient_end: str | None = Field(None, max_length=20)
+    features: list[str] | None = None
+    example_prompts: list[str] | None = None
+    requires_subscription: str | None = Field(None, max_length=50)
     sort_order: int | None = Field(None, ge=0)
     is_enabled: bool | None = None
 
@@ -75,7 +81,14 @@ class CreateAgentRoleConfigRequest(BaseModel):
     description: str | None = None
     system_prompt: str = Field(..., min_length=10)
     tools: list[str] = Field(default_factory=list)
+    category: str = Field(default="custom", max_length=50)
+    gradient_start: str | None = Field(None, max_length=20)
+    gradient_end: str | None = Field(None, max_length=20)
+    features: list[str] | None = None
+    example_prompts: list[str] | None = None
+    requires_subscription: str | None = Field(None, max_length=50)
     sort_order: int = Field(default=500, ge=0)
+    is_enabled: bool = True
 
 
 class AgentRoleConfigListResponse(BaseModel):
@@ -250,8 +263,14 @@ async def create_role_config(
         description=data.description,
         system_prompt=data.system_prompt,
         tools=data.tools,
+        category=data.category,
+        gradient_start=data.gradient_start,
+        gradient_end=data.gradient_end,
+        features=data.features,
+        example_prompts=data.example_prompts,
+        requires_subscription=data.requires_subscription,
         sort_order=data.sort_order,
-        is_enabled=True,
+        is_enabled=data.is_enabled,
         is_system=False,  # Custom roles can be deleted
         created_by_admin_id=admin_id,
     )

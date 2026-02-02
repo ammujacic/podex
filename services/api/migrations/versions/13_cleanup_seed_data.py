@@ -15,7 +15,7 @@ This migration fixes:
 from collections.abc import Sequence
 
 from alembic import op
-from sqlalchemy import text
+from sqlalchemy import Connection, text
 
 # revision identifiers, used by Alembic.
 revision: str = "13"
@@ -49,7 +49,7 @@ DEPRECATED_MCP_SLUGS = [
 ]
 
 
-def _fix_model_ids(conn, model_fixes: list[tuple[str, str]]) -> None:
+def _fix_model_ids(conn: Connection, model_fixes: list[tuple[str, str]]) -> None:
     """Apply model ID fixes, always ensuring only the correct model remains."""
     for old_id, _new_id in model_fixes:
         # Always delete the old (incorrect) model if it exists
@@ -94,7 +94,7 @@ def upgrade() -> None:
     )
 
 
-def _revert_model_ids(conn, model_fixes: list[tuple[str, str]]) -> None:
+def _revert_model_ids(conn: Connection, model_fixes: list[tuple[str, str]]) -> None:
     """Revert model ID fixes (swap old and new)."""
     for old_id, new_id in model_fixes:
         result = conn.execute(

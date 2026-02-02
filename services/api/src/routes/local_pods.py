@@ -257,7 +257,7 @@ async def register_pod(
         name=data.name,
         token_hash=token_hash,
         token_prefix=token_prefix,
-        labels=data.labels if data.labels else None,
+        labels=data.labels or None,
     )
 
     db.add(pod)
@@ -330,7 +330,7 @@ async def update_pod(
     if data.name is not None:
         pod.name = data.name
     if data.labels is not None:
-        pod.labels = data.labels if data.labels else None
+        pod.labels = data.labels or None
 
     await db.commit()
     await db.refresh(pod)

@@ -216,7 +216,7 @@ function EditModelModal({ model, onClose, onSave }: EditModelModalProps) {
   const [formData, setFormData] = useState({
     model_id: model?.model_id || '',
     display_name: model?.display_name || '',
-    provider: model?.provider || 'bedrock',
+    provider: model?.provider || 'openrouter',
     family: model?.family || 'anthropic',
     cost_tier: model?.cost_tier || 'medium',
     context_window: model?.context_window || 200000,
@@ -225,7 +225,13 @@ function EditModelModal({ model, onClose, onSave }: EditModelModalProps) {
     output_cost_per_million: model?.output_cost_per_million || 0,
     is_enabled: model?.is_enabled ?? true,
     is_default: model?.is_default ?? false,
+    is_user_key_model: model?.is_user_key_model ?? false,
+    is_featured: model?.is_featured ?? false,
     sort_order: model?.sort_order || 100,
+    display_order: model?.display_order || 0,
+    categories: JSON.stringify(model?.categories || [], null, 2),
+    short_description: model?.short_description || '',
+    model_metadata: JSON.stringify(model?.model_metadata || {}, null, 2),
     capabilities: model?.capabilities || {
       vision: false,
       thinking: false,
@@ -240,7 +246,24 @@ function EditModelModal({ model, onClose, onSave }: EditModelModalProps) {
     e.preventDefault();
     setSaving(true);
     try {
-      await onSave(formData);
+      // Parse JSON fields
+      let parsedCategories: string[] = [];
+      let parsedMetadata: Record<string, unknown> = {};
+      try {
+        parsedCategories = JSON.parse(formData.categories);
+      } catch {
+        parsedCategories = [];
+      }
+      try {
+        parsedMetadata = JSON.parse(formData.model_metadata);
+      } catch {
+        parsedMetadata = {};
+      }
+      await onSave({
+        ...formData,
+        categories: parsedCategories,
+        model_metadata: parsedMetadata,
+      });
       onClose();
     } catch (error) {
       console.error('Failed to save model:', error);
@@ -424,8 +447,20 @@ function EditModelModal({ model, onClose, onSave }: EditModelModalProps) {
             </div>
           </div>
 
-          {/* Flags */}
-          <div className="grid grid-cols-3 gap-4">
+          {/* Short Description */}
+          <div>
+            <label className="block text-sm text-text-muted mb-1">Short Description</label>
+            <textarea
+              value={formData.short_description}
+              onChange={(e) => setFormData({ ...formData, short_description: e.target.value })}
+              className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary text-sm"
+              placeholder="Brief description of the model's strengths..."
+              rows={2}
+            />
+          </div>
+
+          {/* Order & Flags */}
+          <div className="grid grid-cols-4 gap-4">
             <div>
               <label className="block text-sm text-text-muted mb-1">Sort Order</label>
               <input
@@ -438,28 +473,82 @@ function EditModelModal({ model, onClose, onSave }: EditModelModalProps) {
                 min={0}
               />
             </div>
-            <div className="flex items-end">
-              <label className="flex items-center gap-2 pb-2">
-                <input
-                  type="checkbox"
-                  checked={formData.is_enabled}
-                  onChange={(e) => setFormData({ ...formData, is_enabled: e.target.checked })}
-                  className="rounded border-border-subtle"
-                />
-                <span className="text-sm text-text-secondary">Enabled</span>
-              </label>
+            <div>
+              <label className="block text-sm text-text-muted mb-1">Display Order</label>
+              <input
+                type="number"
+                value={formData.display_order}
+                onChange={(e) =>
+                  setFormData({ ...formData, display_order: parseInt(e.target.value) || 0 })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                min={0}
+              />
             </div>
-            <div className="flex items-end">
-              <label className="flex items-center gap-2 pb-2">
-                <input
-                  type="checkbox"
-                  checked={formData.is_default}
-                  onChange={(e) => setFormData({ ...formData, is_default: e.target.checked })}
-                  className="rounded border-border-subtle"
-                />
-                <span className="text-sm text-text-secondary">Default</span>
-              </label>
-            </div>
+          </div>
+
+          {/* Boolean Flags */}
+          <div className="flex flex-wrap gap-6">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={formData.is_enabled}
+                onChange={(e) => setFormData({ ...formData, is_enabled: e.target.checked })}
+                className="rounded border-border-subtle"
+              />
+              <span className="text-sm text-text-secondary">Enabled</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={formData.is_default}
+                onChange={(e) => setFormData({ ...formData, is_default: e.target.checked })}
+                className="rounded border-border-subtle"
+              />
+              <span className="text-sm text-text-secondary">Default</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={formData.is_user_key_model}
+                onChange={(e) => setFormData({ ...formData, is_user_key_model: e.target.checked })}
+                className="rounded border-border-subtle"
+              />
+              <span className="text-sm text-text-secondary">User Key Model</span>
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={formData.is_featured}
+                onChange={(e) => setFormData({ ...formData, is_featured: e.target.checked })}
+                className="rounded border-border-subtle"
+              />
+              <span className="text-sm text-text-secondary">Featured</span>
+            </label>
+          </div>
+
+          {/* Categories (JSON) */}
+          <div>
+            <label className="block text-sm text-text-muted mb-1">Categories (JSON array)</label>
+            <textarea
+              value={formData.categories}
+              onChange={(e) => setFormData({ ...formData, categories: e.target.value })}
+              className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+              placeholder='["general", "coding", "creative"]'
+              rows={2}
+            />
+          </div>
+
+          {/* Model Metadata (JSON) */}
+          <div>
+            <label className="block text-sm text-text-muted mb-1">Model Metadata (JSON)</label>
+            <textarea
+              value={formData.model_metadata}
+              onChange={(e) => setFormData({ ...formData, model_metadata: e.target.value })}
+              className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+              placeholder='{"release_date": "2024-01-01", "version": "1.0"}'
+              rows={3}
+            />
           </div>
 
           {/* Actions */}

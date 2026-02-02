@@ -371,7 +371,7 @@ interface EditSkillModalProps {
 }
 
 function EditSkillModal({ skill, onClose, onSave }: EditSkillModalProps) {
-  const [formData, setFormData] = useState<Partial<SystemSkill>>({
+  const [formData, setFormData] = useState<Partial<SystemSkill> & { examplesJson?: string }>({
     name: skill?.name || '',
     slug: skill?.slug || '',
     description: skill?.description || '',
@@ -383,6 +383,8 @@ function EditSkillModal({ skill, onClose, onSave }: EditSkillModalProps) {
     required_context: skill?.required_context || [],
     steps: skill?.steps || [],
     system_prompt: skill?.system_prompt || '',
+    examples: skill?.examples || [],
+    examplesJson: JSON.stringify(skill?.examples || [], null, 2),
     metadata: skill?.metadata || { category: '', estimated_duration: 60, requires_approval: false },
     is_active: skill?.is_active ?? true,
     is_default: skill?.is_default ?? true,
@@ -396,7 +398,15 @@ function EditSkillModal({ skill, onClose, onSave }: EditSkillModalProps) {
     e.preventDefault();
     setSaving(true);
     try {
-      await onSave(formData);
+      // Parse examples JSON
+      let parsedExamples: { input: string; output: string }[] = [];
+      try {
+        parsedExamples = JSON.parse(formData.examplesJson || '[]');
+      } catch {
+        parsedExamples = [];
+      }
+      const { examplesJson: _examplesJson, ...dataToSave } = formData;
+      await onSave({ ...dataToSave, examples: parsedExamples });
       onClose();
     } catch (error) {
       console.error('Failed to save skill:', error);
@@ -499,7 +509,7 @@ function EditSkillModal({ skill, onClose, onSave }: EditSkillModalProps) {
                 />
               </div>
 
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-4 gap-4">
                 <div>
                   <label className="block text-sm text-text-muted mb-1">Version</label>
                   <input
@@ -507,6 +517,16 @@ function EditSkillModal({ skill, onClose, onSave }: EditSkillModalProps) {
                     value={formData.version}
                     onChange={(e) => setFormData({ ...formData, version: e.target.value })}
                     className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-text-muted mb-1">Author</label>
+                  <input
+                    type="text"
+                    value={formData.author}
+                    onChange={(e) => setFormData({ ...formData, author: e.target.value })}
+                    className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                    placeholder="system"
                   />
                 </div>
                 <div>
@@ -786,6 +806,18 @@ function EditSkillModal({ skill, onClose, onSave }: EditSkillModalProps) {
                   onChange={(e) => setFormData({ ...formData, system_prompt: e.target.value })}
                   className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary h-32 font-mono text-sm"
                   placeholder="Optional system prompt to guide the agent..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Examples (JSON array of {`{input, output}`} objects)
+                </label>
+                <textarea
+                  value={formData.examplesJson || '[]'}
+                  onChange={(e) => setFormData({ ...formData, examplesJson: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary h-32 font-mono text-sm"
+                  placeholder='[{"input": "Example question", "output": "Example response"}]'
                 />
               </div>
 

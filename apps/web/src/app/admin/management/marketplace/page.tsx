@@ -42,6 +42,11 @@ interface MarketplaceSkill {
   steps: SkillStep[];
   system_prompt?: string;
   examples?: { input: string; output: string }[];
+  metadata?: {
+    category?: string;
+    estimated_duration?: number;
+    requires_approval?: boolean;
+  };
   status: 'pending' | 'approved' | 'rejected';
   rejection_reason?: string;
   usage_count: number;
@@ -526,6 +531,23 @@ function DetailModal({ skill, onClose }: DetailModalProps) {
             </div>
           </div>
 
+          {/* Required Context */}
+          {skill.required_context.length > 0 && (
+            <div>
+              <p className="text-xs text-text-muted mb-2">Required Context</p>
+              <div className="flex flex-wrap gap-1.5">
+                {skill.required_context.map((ctx) => (
+                  <code
+                    key={ctx}
+                    className="px-2 py-1 bg-elevated rounded text-xs text-text-secondary font-mono"
+                  >
+                    {ctx}
+                  </code>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Steps */}
           <div>
             <p className="text-xs text-text-muted mb-2">Workflow Steps ({skill.steps.length})</p>
@@ -582,6 +604,54 @@ function DetailModal({ skill, onClose }: DetailModalProps) {
               <pre className="p-3 bg-elevated rounded-lg text-xs text-text-secondary font-mono whitespace-pre-wrap">
                 {skill.system_prompt}
               </pre>
+            </div>
+          )}
+
+          {/* Examples */}
+          {skill.examples && skill.examples.length > 0 && (
+            <div>
+              <p className="text-xs text-text-muted mb-2">Examples ({skill.examples.length})</p>
+              <div className="space-y-2">
+                {skill.examples.map((example, idx) => (
+                  <div key={idx} className="p-3 bg-elevated rounded-lg">
+                    <p className="text-xs text-text-muted mb-1">Input:</p>
+                    <p className="text-sm text-text-secondary mb-2">{example.input}</p>
+                    <p className="text-xs text-text-muted mb-1">Output:</p>
+                    <p className="text-sm text-text-secondary">{example.output}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Metadata */}
+          {skill.metadata && (
+            <div>
+              <p className="text-xs text-text-muted mb-2">Metadata</p>
+              <div className="grid grid-cols-3 gap-3">
+                {skill.metadata.category && (
+                  <div className="p-3 bg-elevated rounded-lg">
+                    <p className="text-xs text-text-muted">Category</p>
+                    <p className="text-sm text-text-primary">{skill.metadata.category}</p>
+                  </div>
+                )}
+                {skill.metadata.estimated_duration && (
+                  <div className="p-3 bg-elevated rounded-lg">
+                    <p className="text-xs text-text-muted">Est. Duration</p>
+                    <p className="text-sm text-text-primary">
+                      {Math.round(skill.metadata.estimated_duration / 60)}m
+                    </p>
+                  </div>
+                )}
+                {skill.metadata.requires_approval !== undefined && (
+                  <div className="p-3 bg-elevated rounded-lg">
+                    <p className="text-xs text-text-muted">Requires Approval</p>
+                    <p className="text-sm text-text-primary">
+                      {skill.metadata.requires_approval ? 'Yes' : 'No'}
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

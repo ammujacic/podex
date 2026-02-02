@@ -393,7 +393,7 @@ async def update_template(
         changes=list(update_data.keys()),
     )
 
-    return cast("AdminTemplateResponse", await get_template(template_id, request, db))
+    return cast("AdminTemplateResponse", await get_template(template_id, request, response, db))
 
 
 @router.delete("/{template_id}")

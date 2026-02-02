@@ -586,6 +586,19 @@ async def billing_maintenance_background_task() -> None:
                         if expiring_updated > 0:
                             logger.info("Updated expiring soon balances", count=expiring_updated)
 
+                        # STEP 6: Process org billing period ends (usage-based invoicing)
+                        from src.services.org_limits import process_org_billing_period_ends
+
+                        processed_orgs = await asyncio.wait_for(
+                            process_org_billing_period_ends(db),
+                            timeout=settings.BG_TASK_DB_TIMEOUT,
+                        )
+                        if processed_orgs:
+                            logger.info(
+                                "Processed org billing period ends",
+                                count=len(processed_orgs),
+                            )
+
                         # CRITICAL FIX: Commit with timeout and verify success
                         try:
                             await asyncio.wait_for(
@@ -1015,7 +1028,7 @@ async def workspace_provision_background_task() -> None:
 
                         # Now provision only the workspaces that don't exist
                         for session, workspace in rows:
-                            if not needs_provision.get(workspace.id, False):
+                            if not needs_provision.get(workspace.id):
                                 continue
 
                             try:

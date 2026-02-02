@@ -2,18 +2,21 @@
 
 Supports OAuth flows for:
 - Anthropic (Claude Pro/Max)
-- Google (Gemini)
-- GitHub (Copilot/Codex)
+- OpenAI Codex (ChatGPT Plus/Pro)
+- Google (Gemini CLI / Code Assist)
+- GitHub (Copilot)
 """
 
 from .anthropic import AnthropicOAuthProvider
 from .base import OAuthCredentials, OAuthProvider
 from .github import GitHubOAuthProvider
 from .google import GoogleOAuthProvider
+from .openai_codex import OpenAICodexOAuthProvider
 
 # Registry of supported providers
 OAUTH_PROVIDERS: dict[str, type[OAuthProvider]] = {
     "anthropic": AnthropicOAuthProvider,
+    "openai-codex": OpenAICodexOAuthProvider,
     "google": GoogleOAuthProvider,
     "github": GitHubOAuthProvider,
 }
@@ -44,5 +47,6 @@ __all__ = [
     "GoogleOAuthProvider",
     "OAuthCredentials",
     "OAuthProvider",
+    "OpenAICodexOAuthProvider",
     "get_oauth_provider",
 ]

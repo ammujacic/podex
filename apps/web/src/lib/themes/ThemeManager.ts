@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Theme } from './types';
 import { themes, podexTheme } from './themes';
+import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
 
 // ============================================================================
 // Theme Store
@@ -11,6 +12,8 @@ interface ThemeState {
   currentThemeId: string;
   customThemes: Theme[];
   cssVariablesApplied: boolean;
+  isLoading: boolean;
+  lastSyncedAt: number | null;
 
   // Computed
   currentTheme: Theme;
@@ -21,7 +24,12 @@ interface ThemeState {
   removeCustomTheme: (themeId: string) => void;
   updateCustomTheme: (themeId: string, updates: Partial<Theme>) => void;
   applyTheme: (theme: Theme) => void;
+  loadFromServer: () => Promise<void>;
+  syncToServer: () => Promise<void>;
 }
+
+// Debounce helper for syncing
+let themeSyncTimeout: NodeJS.Timeout | null = null;
 
 export const useThemeStore = create<ThemeState>()(
   persist(
@@ -29,6 +37,8 @@ export const useThemeStore = create<ThemeState>()(
       currentThemeId: 'podex',
       customThemes: [],
       cssVariablesApplied: false,
+      isLoading: false,
+      lastSyncedAt: null,
 
       get currentTheme() {
         const state = get();
@@ -43,6 +53,60 @@ export const useThemeStore = create<ThemeState>()(
         if (theme) {
           set({ currentThemeId: themeId });
           state.applyTheme(theme);
+
+          // Debounced sync to server (500ms)
+          if (themeSyncTimeout) clearTimeout(themeSyncTimeout);
+          themeSyncTimeout = setTimeout(() => {
+            get().syncToServer().catch(console.error);
+          }, 500);
+        }
+      },
+
+      loadFromServer: async () => {
+        set({ isLoading: true });
+        try {
+          const config = await getUserConfig();
+
+          // If null (not authenticated), silently use localStorage defaults
+          if (!config) {
+            set({ isLoading: false });
+            return;
+          }
+
+          // Load theme from server if it exists and is valid
+          if (config.theme) {
+            const state = get();
+            const allThemes = [...themes, ...state.customThemes];
+            const theme = allThemes.find((t) => t.id === config.theme);
+            if (theme) {
+              set({ currentThemeId: config.theme, lastSyncedAt: Date.now() });
+              applyThemeToCss(theme);
+            }
+          }
+
+          set({ isLoading: false });
+        } catch (error) {
+          console.error('Failed to load theme from server:', error);
+          set({ isLoading: false });
+        }
+      },
+
+      syncToServer: async () => {
+        const state = get();
+        try {
+          const result = await updateUserConfig({ theme: state.currentThemeId });
+          // If null, user is not authenticated - silently skip
+          if (result !== null) {
+            set({ lastSyncedAt: Date.now() });
+          }
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } catch (error: any) {
+          // Silently ignore auth errors (401/403) and network errors (503)
+          if (error?.status === 401 || error?.status === 403 || error?.status === 503) {
+            console.warn('Skipping theme sync - user not authenticated or network error');
+            return;
+          }
+          console.error('Failed to sync theme to server:', error);
         }
       },
 
@@ -93,6 +157,14 @@ export const useThemeStore = create<ThemeState>()(
     }
   )
 );
+
+// Load theme from server when store is available
+if (typeof window !== 'undefined') {
+  // Small delay to ensure store is initialized
+  setTimeout(() => {
+    useThemeStore.getState().loadFromServer().catch(console.error);
+  }, 100);
+}
 
 // ============================================================================
 // CSS Variable Application

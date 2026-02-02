@@ -141,7 +141,7 @@ async def create_dns_cname(hostname: str, target: str) -> str:
     if hostname.endswith("." + zone_name):
         name = hostname.removesuffix("." + zone_name)
     else:
-        name = hostname if "." not in hostname else hostname.split(".")[0]
+        name = hostname if "." not in hostname else hostname.split(".", maxsplit=1)[0]
 
     async with _http_client() as client:
         r = await client.post(
@@ -191,7 +191,7 @@ async def delete_dns_record_by_name(hostname: str) -> None:
     if hostname.endswith("." + zone_name):
         name = hostname.removesuffix("." + zone_name)
     else:
-        name = hostname if "." not in hostname else hostname.split(".")[0]
+        name = hostname if "." not in hostname else hostname.split(".", maxsplit=1)[0]
     full_name = f"{name}.{zone_name}" if name != zone_name else zone_name
 
     async with _http_client() as client:

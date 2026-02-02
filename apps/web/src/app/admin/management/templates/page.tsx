@@ -210,6 +210,16 @@ function TemplateModal({ template, onClose, onSave, isCreating }: TemplateModalP
     base_image: template?.base_image || 'podex/workspace:latest',
     is_public: template?.is_public ?? true,
     is_official: template?.is_official ?? true,
+    // New fields as JSON strings for editing
+    pre_install_commands: template?.pre_install_commands?.join('\n') || '',
+    packages: template?.packages?.join('\n') || '',
+    environment_variables: template?.environment_variables
+      ? JSON.stringify(template.environment_variables, null, 2)
+      : '',
+    language_versions: template?.language_versions
+      ? JSON.stringify(template.language_versions, null, 2)
+      : '',
+    default_ports: template?.default_ports ? JSON.stringify(template.default_ports, null, 2) : '',
   });
   const [saving, setSaving] = useState(false);
 
@@ -217,8 +227,39 @@ function TemplateModal({ template, onClose, onSave, isCreating }: TemplateModalP
     e.preventDefault();
     setSaving(true);
     try {
-      await onSave(formData);
+      // Parse the JSON fields
+      const apiData: Partial<AdminTemplate> = {
+        name: formData.name,
+        slug: formData.slug,
+        description: formData.description || null,
+        icon: formData.icon,
+        base_image: formData.base_image,
+        is_public: formData.is_public,
+        is_official: formData.is_official,
+        pre_install_commands: formData.pre_install_commands
+          ? formData.pre_install_commands
+              .split('\n')
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : null,
+        packages: formData.packages
+          ? formData.packages
+              .split('\n')
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : null,
+        environment_variables: formData.environment_variables
+          ? JSON.parse(formData.environment_variables)
+          : null,
+        language_versions: formData.language_versions
+          ? JSON.parse(formData.language_versions)
+          : null,
+        default_ports: formData.default_ports ? JSON.parse(formData.default_ports) : null,
+      };
+      await onSave(apiData);
       onClose();
+    } catch {
+      alert('Invalid JSON in one of the fields. Please check and try again.');
     } finally {
       setSaving(false);
     }
@@ -226,7 +267,7 @@ function TemplateModal({ template, onClose, onSave, isCreating }: TemplateModalP
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-surface rounded-xl border border-border-subtle p-6 w-full max-w-lg">
+      <div className="bg-surface rounded-xl border border-border-subtle p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
         <h2 className="text-xl font-semibold text-text-primary mb-6">
           {isCreating ? 'Create Template' : 'Edit Template'}
         </h2>
@@ -314,6 +355,82 @@ function TemplateModal({ template, onClose, onSave, isCreating }: TemplateModalP
               />
               <span className="text-sm text-text-secondary">Official</span>
             </label>
+          </div>
+
+          {/* Advanced Configuration */}
+          <div className="border-t border-border-subtle pt-4">
+            <h3 className="text-sm font-medium text-text-secondary mb-3">Advanced Configuration</h3>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Pre-install Commands (one per line)
+                </label>
+                <textarea
+                  value={formData.pre_install_commands}
+                  onChange={(e) =>
+                    setFormData({ ...formData, pre_install_commands: e.target.value })
+                  }
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                  rows={3}
+                  placeholder="apt-get update&#10;apt-get install -y curl"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Packages (one per line)
+                </label>
+                <textarea
+                  value={formData.packages}
+                  onChange={(e) => setFormData({ ...formData, packages: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                  rows={3}
+                  placeholder="nodejs&#10;python3&#10;git"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Environment Variables (JSON)
+                </label>
+                <textarea
+                  value={formData.environment_variables}
+                  onChange={(e) =>
+                    setFormData({ ...formData, environment_variables: e.target.value })
+                  }
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                  rows={3}
+                  placeholder='{"NODE_ENV": "development"}'
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Language Versions (JSON)
+                </label>
+                <textarea
+                  value={formData.language_versions}
+                  onChange={(e) => setFormData({ ...formData, language_versions: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                  rows={2}
+                  placeholder='{"node": "20", "python": "3.12"}'
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Default Ports (JSON array)
+                </label>
+                <textarea
+                  value={formData.default_ports}
+                  onChange={(e) => setFormData({ ...formData, default_ports: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                  rows={3}
+                  placeholder='[{"port": 3000, "name": "dev", "protocol": "http"}]'
+                />
+              </div>
+            </div>
           </div>
 
           <div className="flex justify-end gap-3 pt-4 border-t border-border-subtle">

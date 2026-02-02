@@ -50,7 +50,13 @@ import { useConfigStore } from '@/stores/config';
 // Types
 // ============================================================================
 
-export type ModelProvider = 'anthropic' | 'openai' | 'google' | 'ollama' | 'lmstudio' | 'bedrock';
+export type ModelProvider =
+  | 'anthropic'
+  | 'openai'
+  | 'google'
+  | 'ollama'
+  | 'lmstudio'
+  | 'openrouter';
 
 export interface ModelConfig {
   id: string;

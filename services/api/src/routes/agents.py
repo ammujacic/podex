@@ -34,7 +34,14 @@ from src.database import (
 )
 from src.database import Session as SessionModel
 from src.database.connection import async_session_factory
-from src.database.models import ConversationMessage, ConversationSession, UserOAuthToken
+from src.database.models import (
+    ConversationMessage,
+    ConversationSession,
+    Organization,
+    OrganizationMember,
+    UserOAuthToken,
+)
+from src.services.org_limits import AgentLimitExceededError, OrgLimitsService
 from src.exceptions import (
     EmptyMessageContentError,
     MessageContentTooLargeError,
@@ -1578,6 +1585,29 @@ async def create_agent(
 
     # Check agent quota before creating
     await check_agent_quota(db, session.owner_id, session_id)
+
+    # Check organization agent limits if user is in an org
+    org_result = await db.execute(
+        select(OrganizationMember, Organization)
+        .join(Organization, OrganizationMember.organization_id == Organization.id)
+        .where(OrganizationMember.user_id == session.owner_id)
+    )
+    org_row = org_result.one_or_none()
+    if org_row:
+        member, org = org_row[0], org_row[1]
+        try:
+            limits_service = OrgLimitsService(db)
+            await limits_service.check_agent_count(member, org)
+        except AgentLimitExceededError as e:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "agent_limit_exceeded",
+                    "message": str(e),
+                    "current": e.current,
+                    "limit": e.limit,
+                },
+            )
 
     # If template_id provided, verify it exists (usage count incremented AFTER successful creation)
     template = None

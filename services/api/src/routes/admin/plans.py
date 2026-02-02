@@ -91,6 +91,20 @@ class CreatePlanRequest(BaseModel):
     stripe_price_id_yearly: str | None = None
     stripe_product_id: str | None = None
 
+    # Display/UI settings
+    color: str | None = None
+    icon: str | None = None
+    cta_text: str | None = None
+    highlight_features: list[str] | None = None
+
+    # Session/workspace configuration
+    session_timeout_options: list[int | None] | None = None
+    max_thinking_tokens: int | None = None
+    workspace_cpu_limit: int | None = None
+    workspace_memory_limit: int | None = None
+    workspace_disk_limit: int | None = None
+    max_session_duration_minutes: int | None = None
+
 
 class UpdatePlanRequest(BaseModel):
     """Update subscription plan request."""
@@ -119,6 +133,20 @@ class UpdatePlanRequest(BaseModel):
     stripe_price_id_monthly: str | None = None
     stripe_price_id_yearly: str | None = None
     stripe_product_id: str | None = None
+
+    # Display/UI settings
+    color: str | None = None
+    icon: str | None = None
+    cta_text: str | None = None
+    highlight_features: list[str] | None = None
+
+    # Session/workspace configuration
+    session_timeout_options: list[int | None] | None = None
+    max_thinking_tokens: int | None = None
+    workspace_cpu_limit: int | None = None
+    workspace_memory_limit: int | None = None
+    workspace_disk_limit: int | None = None
+    max_session_duration_minutes: int | None = None
 
 
 class AdminPlanResponse(BaseModel):
@@ -151,6 +179,21 @@ class AdminPlanResponse(BaseModel):
     stripe_price_id_monthly: str | None
     stripe_price_id_yearly: str | None
     stripe_product_id: str | None
+
+    # Display/UI settings
+    color: str | None
+    icon: str | None
+    cta_text: str | None
+    highlight_features: list[str] | None
+
+    # Session/workspace configuration
+    session_timeout_options: list[int | None] | None
+    max_thinking_tokens: int | None
+    workspace_cpu_limit: int | None
+    workspace_memory_limit: int | None
+    workspace_disk_limit: int | None
+    max_session_duration_minutes: int | None
+
     created_at: datetime
     updated_at: datetime
 
@@ -221,6 +264,16 @@ async def list_plans(
                 stripe_price_id_monthly=plan.stripe_price_id_monthly,
                 stripe_price_id_yearly=plan.stripe_price_id_yearly,
                 stripe_product_id=plan.stripe_product_id,
+                color=plan.color,
+                icon=plan.icon,
+                cta_text=plan.cta_text,
+                highlight_features=plan.highlight_features,
+                session_timeout_options=plan.session_timeout_options,
+                max_thinking_tokens=plan.max_thinking_tokens,
+                workspace_cpu_limit=plan.workspace_cpu_limit,
+                workspace_memory_limit=plan.workspace_memory_limit,
+                workspace_disk_limit=plan.workspace_disk_limit,
+                max_session_duration_minutes=plan.max_session_duration_minutes,
                 created_at=plan.created_at,
                 updated_at=plan.updated_at,
                 subscriber_count=subscriber_count,
@@ -274,6 +327,16 @@ async def create_plan(
         stripe_price_id_monthly=data.stripe_price_id_monthly,
         stripe_price_id_yearly=data.stripe_price_id_yearly,
         stripe_product_id=data.stripe_product_id,
+        color=data.color,
+        icon=data.icon,
+        cta_text=data.cta_text,
+        highlight_features=data.highlight_features,
+        session_timeout_options=data.session_timeout_options,
+        max_thinking_tokens=data.max_thinking_tokens,
+        workspace_cpu_limit=data.workspace_cpu_limit,
+        workspace_memory_limit=data.workspace_memory_limit,
+        workspace_disk_limit=data.workspace_disk_limit,
+        max_session_duration_minutes=data.max_session_duration_minutes,
     )
 
     db.add(plan)
@@ -310,6 +373,16 @@ async def create_plan(
         stripe_price_id_monthly=plan.stripe_price_id_monthly,
         stripe_price_id_yearly=plan.stripe_price_id_yearly,
         stripe_product_id=plan.stripe_product_id,
+        color=plan.color,
+        icon=plan.icon,
+        cta_text=plan.cta_text,
+        highlight_features=plan.highlight_features,
+        session_timeout_options=plan.session_timeout_options,
+        max_thinking_tokens=plan.max_thinking_tokens,
+        workspace_cpu_limit=plan.workspace_cpu_limit,
+        workspace_memory_limit=plan.workspace_memory_limit,
+        workspace_disk_limit=plan.workspace_disk_limit,
+        max_session_duration_minutes=plan.max_session_duration_minutes,
         created_at=plan.created_at,
         updated_at=plan.updated_at,
         subscriber_count=0,
@@ -372,6 +445,16 @@ async def get_plan(
         stripe_price_id_monthly=plan.stripe_price_id_monthly,
         stripe_price_id_yearly=plan.stripe_price_id_yearly,
         stripe_product_id=plan.stripe_product_id,
+        color=plan.color,
+        icon=plan.icon,
+        cta_text=plan.cta_text,
+        highlight_features=plan.highlight_features,
+        session_timeout_options=plan.session_timeout_options,
+        max_thinking_tokens=plan.max_thinking_tokens,
+        workspace_cpu_limit=plan.workspace_cpu_limit,
+        workspace_memory_limit=plan.workspace_memory_limit,
+        workspace_disk_limit=plan.workspace_disk_limit,
+        max_session_duration_minutes=plan.max_session_duration_minutes,
         created_at=plan.created_at,
         updated_at=plan.updated_at,
         subscriber_count=subscriber_count,
@@ -413,7 +496,7 @@ async def update_plan(
         changes=list(update_data.keys()),
     )
 
-    return cast("AdminPlanResponse", await get_plan(plan_id, request, db))
+    return cast("AdminPlanResponse", await get_plan(plan_id, request, response, db))
 
 
 @router.delete("/{plan_id}")

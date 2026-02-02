@@ -93,7 +93,7 @@ class CheckRunner:
             exit_code = result.get("exit_code", 1)
 
             # Combine output for parsing
-            output = stdout if stdout else stderr
+            output = stdout or stderr
 
             # Parse output to get score
             score, details = parse_check_output(

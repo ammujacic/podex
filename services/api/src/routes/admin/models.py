@@ -59,6 +59,7 @@ class CreateModelRequest(BaseModel):
         default="anthropic", description="Model family: anthropic, gemini, llama, mistral"
     )
     description: str | None = None
+    short_description: str | None = Field(None, description="Short description for model selector")
     cost_tier: str = Field(default="medium", description="Cost tier: low, medium, high, premium")
     capabilities: ModelCapabilities = Field(default_factory=ModelCapabilities)
     context_window: int = Field(default=200000, description="Maximum context window tokens")
@@ -72,6 +73,10 @@ class CreateModelRequest(BaseModel):
     is_enabled: bool = True
     is_default: bool = Field(default=False, description="Is this a platform default model")
     is_user_key_model: bool = Field(default=False, description="Requires user's own API key")
+    is_featured: bool = Field(default=False, description="Featured in model selector")
+    sort_order: int = Field(default=100, description="Sort order for display")
+    display_order: int = Field(default=0, description="Display order in model selector")
+    categories: list[str] = Field(default_factory=list, description="Model categories")
 
 
 class UpdateModelRequest(BaseModel):
@@ -79,6 +84,7 @@ class UpdateModelRequest(BaseModel):
 
     display_name: str | None = None
     description: str | None = None
+    short_description: str | None = None
     cost_tier: str | None = None
     capabilities: ModelCapabilities | None = None
     context_window: int | None = None
@@ -88,7 +94,10 @@ class UpdateModelRequest(BaseModel):
     is_enabled: bool | None = None
     is_default: bool | None = None
     is_user_key_model: bool | None = None
+    is_featured: bool | None = None
     sort_order: int | None = None
+    display_order: int | None = None
+    categories: list[str] | None = None
 
 
 class ModelResponse(BaseModel):
@@ -100,6 +109,7 @@ class ModelResponse(BaseModel):
     provider: str
     family: str
     description: str | None
+    short_description: str | None
     cost_tier: str
     capabilities: dict[str, Any]
     context_window: int
@@ -109,7 +119,11 @@ class ModelResponse(BaseModel):
     is_enabled: bool
     is_default: bool
     is_user_key_model: bool
+    is_featured: bool
     sort_order: int
+    display_order: int
+    categories: list[str]
+    model_metadata: dict[str, Any] | None
     created_at: datetime
     updated_at: datetime
 
@@ -155,6 +169,7 @@ def _model_to_response(m: LLMModel) -> ModelResponse:
         provider=m.provider,
         family=m.family,
         description=metadata.get("description"),
+        short_description=m.short_description,
         cost_tier=m.cost_tier,
         capabilities=m.capabilities or {},
         context_window=m.context_window,
@@ -164,7 +179,11 @@ def _model_to_response(m: LLMModel) -> ModelResponse:
         is_enabled=m.is_enabled,
         is_default=m.is_default,
         is_user_key_model=m.is_user_key_model,
+        is_featured=m.is_featured,
         sort_order=m.sort_order,
+        display_order=m.display_order,
+        categories=m.categories or [],
+        model_metadata=m.model_metadata,
         created_at=m.created_at,
         updated_at=m.updated_at,
     )
@@ -227,6 +246,12 @@ async def create_model(
         output_cost_per_million=data.output_cost_per_million,
         is_enabled=data.is_enabled,
         is_default=data.is_default,
+        is_user_key_model=data.is_user_key_model,
+        is_featured=data.is_featured,
+        sort_order=data.sort_order,
+        display_order=data.display_order,
+        categories=data.categories,
+        short_description=data.short_description,
         model_metadata={"description": data.description} if data.description else None,
     )
 

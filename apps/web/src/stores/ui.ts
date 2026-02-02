@@ -4,7 +4,11 @@ import { getUserConfig, updateUserConfig } from '@/lib/api/user-config';
 import { useAuthStore } from '@/stores/auth';
 import { useConfigStore } from '@/stores/config';
 
-export type Theme = 'dark' | 'light' | 'system';
+// Note: Theme selection is now handled by ThemeManager (lib/themes/ThemeManager.ts)
+// This file only tracks UI layout and preferences that are stored in ui_preferences
+
+// Legacy theme type for UI preferences (light/dark mode toggle)
+type Theme = 'dark' | 'light' | 'system';
 
 // Grid configuration
 export interface GridConfig {
@@ -271,12 +275,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
         lastSyncedAt: Date.now(),
       };
 
-      if (serverPrefs.theme) {
-        const resolved = serverPrefs.theme === 'system' ? getSystemTheme() : serverPrefs.theme;
-        applyTheme(resolved);
-        updates.theme = serverPrefs.theme;
-        updates.resolvedTheme = resolved;
-      }
+      // Note: theme is loaded separately by ThemeManager from the top-level 'theme' field
 
       if (serverPrefs.sidebarLayout) {
         updates.sidebarLayout = serverPrefs.sidebarLayout;
@@ -343,8 +342,8 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
       return;
     }
 
+    // Note: theme is synced separately by ThemeManager to the top-level 'theme' field
     const prefsToSync = {
-      theme: state.theme,
       sidebarLayout: state.sidebarLayout,
       gitWidgetSettingsBySession: state.gitWidgetSettingsBySession,
       githubWidgetFiltersBySession: state.githubWidgetFiltersBySession,
@@ -766,7 +765,7 @@ const uiStoreCreator: StateCreator<UIState, [], [['zustand/persist', unknown]]> 
 const persistedUIStore = persist(uiStoreCreator, {
   name: 'podex-ui-settings',
   partialize: (state) => ({
-    theme: state.theme,
+    // Note: theme is persisted separately by ThemeManager
     sidebarLayout: state.sidebarLayout,
     gitWidgetSettingsBySession: state.gitWidgetSettingsBySession,
     githubWidgetFiltersBySession: state.githubWidgetFiltersBySession,
