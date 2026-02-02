@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -49,6 +49,7 @@ async def get_session_worktrees(
     request: Request,
     response: Response,
     db: DbSession,
+    limit: int = Query(default=100, ge=1, le=500),
 ) -> WorktreeListResponse:
     """Get all worktrees for a session."""
     user_id = get_current_user_id(request)
@@ -62,8 +63,13 @@ async def get_session_worktrees(
     if session.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Get all worktrees for the session
-    query = select(AgentWorktree).where(AgentWorktree.session_id == session_id)
+    # Get worktrees for the session (limited to prevent unbounded queries)
+    query = (
+        select(AgentWorktree)
+        .where(AgentWorktree.session_id == session_id)
+        .order_by(AgentWorktree.created_at.desc())
+        .limit(limit)
+    )
     result = await db.execute(query)
     worktrees = result.scalars().all()
 

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -267,6 +267,7 @@ async def get_session_change_sets(
     response: Response,
     db: DbSession,
     status: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
 ) -> list[ChangeSetResponse]:
     """Get all change sets for a session."""
     user_id = get_current_user_id(request)
@@ -290,7 +291,7 @@ async def get_session_change_sets(
     if status:
         query = query.where(PendingChangeSet.status == status)
 
-    query = query.order_by(PendingChangeSet.created_at.desc())
+    query = query.order_by(PendingChangeSet.created_at.desc()).limit(limit)
 
     result = await db.execute(query)
     change_sets = result.scalars().all()
@@ -329,6 +330,7 @@ async def get_aggregated_changes(
     request: Request,
     response: Response,
     db: DbSession,
+    limit: int = Query(default=100, ge=1, le=500),
 ) -> AggregatedChangesResponse:
     """Get aggregated pending changes across all agents."""
     user_id = get_current_user_id(request)
@@ -342,7 +344,7 @@ async def get_aggregated_changes(
     if session.owner_id != user_id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Get pending change sets from database
+    # Get pending change sets from database (limited to prevent unbounded queries)
     query = (
         select(PendingChangeSet)
         .options(selectinload(PendingChangeSet.files))
@@ -350,6 +352,8 @@ async def get_aggregated_changes(
             PendingChangeSet.session_id == session_id,
             PendingChangeSet.status == "pending",
         )
+        .order_by(PendingChangeSet.created_at.desc())
+        .limit(limit)
     )
 
     result = await db.execute(query)

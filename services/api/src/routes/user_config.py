@@ -8,6 +8,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.cache import cache_delete, cache_get, cache_set, user_config_key
@@ -132,8 +133,21 @@ async def get_user_config(
 
         config = UserConfig(user_id=user_id)
         db.add(config)
-        await db.commit()
-        await db.refresh(config)
+        try:
+            await db.commit()
+            await db.refresh(config)
+        except IntegrityError:
+            # Race condition: another request created the config concurrently
+            # Rollback and re-query to get the existing config
+            await db.rollback()
+            result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+            config = result.scalar_one_or_none()
+            if not config:
+                # Should not happen, but handle gracefully
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to create or retrieve user configuration",
+                )
 
     config_response = UserConfigResponse(
         id=config.id,
@@ -185,6 +199,21 @@ async def update_user_config(
 
         config = UserConfig(user_id=user_id)
         db.add(config)
+
+        try:
+            # Flush to detect integrity errors early (before applying updates)
+            await db.flush()
+        except IntegrityError:
+            # Race condition: another request created the config concurrently
+            # Rollback and re-query to get the existing config
+            await db.rollback()
+            result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+            config = result.scalar_one_or_none()
+            if not config:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to create or retrieve user configuration",
+                )
 
     # Update fields using helper function
     _apply_config_updates(config, request_data)
@@ -277,14 +306,32 @@ async def complete_tour(
             completed_tours=[tour_id],
         )
         db.add(config)
+        try:
+            await db.commit()
+            await db.refresh(config)
+        except IntegrityError:
+            # Race condition: another request created the config concurrently
+            await db.rollback()
+            result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+            config = result.scalar_one_or_none()
+            if not config:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to create or retrieve user configuration",
+                )
+            # Now add the tour to the existing config
+            completed = config.completed_tours or []
+            if tour_id not in completed:
+                config.completed_tours = [*completed, tour_id]
+            await db.commit()
+            await db.refresh(config)
     else:
         # Add tour to completed list if not already there
         completed = config.completed_tours or []
         if tour_id not in completed:
             config.completed_tours = [*completed, tour_id]
-
-    await db.commit()
-    await db.refresh(config)
+        await db.commit()
+        await db.refresh(config)
 
     # Invalidate cache
     await cache_delete(user_config_key(user_id))
@@ -462,14 +509,32 @@ async def set_llm_api_key(
             llm_api_keys={provider_lower: data.api_key},
         )
         db.add(config)
+        try:
+            await db.commit()
+            await db.refresh(config)
+        except IntegrityError:
+            # Race condition: another request created the config concurrently
+            await db.rollback()
+            result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+            config = result.scalar_one_or_none()
+            if not config:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to create or retrieve user configuration",
+                )
+            # Now update the existing config with the API key
+            current_keys = config.llm_api_keys or {}
+            current_keys[provider_lower] = data.api_key
+            config.llm_api_keys = current_keys
+            await db.commit()
+            await db.refresh(config)
     else:
         # Update existing config
         current_keys = config.llm_api_keys or {}
         current_keys[provider_lower] = data.api_key
         config.llm_api_keys = current_keys
-
-    await db.commit()
-    await db.refresh(config)
+        await db.commit()
+        await db.refresh(config)
 
     # Invalidate cache
     await cache_delete(user_config_key(user_id))
@@ -630,7 +695,20 @@ async def discover_local_models(
                 agent_preferences={"local_llm_config": {}},
             )
             db.add(config)
-        elif not config.agent_preferences:
+            try:
+                await db.flush()
+            except IntegrityError:
+                # Race condition: another request created the config concurrently
+                await db.rollback()
+                result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+                config = result.scalar_one_or_none()
+                if not config:
+                    return DiscoverLocalModelsResponse(
+                        models=[],
+                        success=False,
+                        error="Failed to create or retrieve user configuration",
+                    )
+        if not config.agent_preferences:
             config.agent_preferences = {"local_llm_config": {}}
 
         # Update local LLM config with discovered models (assign new dict so JSONB is persisted)
@@ -758,7 +836,19 @@ async def save_local_llm_url(
             agent_preferences={"local_llm_config": {}},
         )
         db.add(config)
-    elif not config.agent_preferences:
+        try:
+            await db.flush()
+        except IntegrityError:
+            # Race condition: another request created the config concurrently
+            await db.rollback()
+            result = await db.execute(select(UserConfig).where(UserConfig.user_id == user_id))
+            config = result.scalar_one_or_none()
+            if not config:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to create or retrieve user configuration",
+                )
+    if not config.agent_preferences:
         config.agent_preferences = {"local_llm_config": {}}
 
     # Update local LLM config with URL; preserve existing models, assign new dict so JSONB persists

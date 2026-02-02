@@ -327,6 +327,8 @@ module = [
     "prometheus_fastapi_instrumentator.*",
     "user_agents",
     "user_agents.*",
+    "geoip2",
+    "geoip2.*",
 ]
 ignore_missing_imports = true
 
@@ -346,6 +348,11 @@ ignore_errors = true
 module = ["src.github_client", "src.routes.github", "src.audit_logger", "src.routes.admin.audit"]
 # GitHub integration, audit logger, and admin audit use many dict returns and complex typing
 ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = ["src.services.geolocation"]
+# geoip2 is a dependency but has no type stubs; allow missing imports in this module only
+ignore_missing_imports = true
 
 [tool.pydantic-mypy]
 init_forbid_extra = true

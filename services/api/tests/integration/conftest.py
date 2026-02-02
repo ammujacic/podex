@@ -8,6 +8,10 @@ Tests are isolated using database transactions with automatic rollback.
 import asyncio
 import contextlib
 import os
+
+# Set test service URLs before any app imports so the app's limiter and config use them.
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5433/podex_test")
+os.environ.setdefault("REDIS_URL", "redis://localhost:6380")
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from typing import Any
@@ -467,6 +471,24 @@ async def test_client(
     original_overrides = app.dependency_overrides.copy()
     app.dependency_overrides[get_db] = override_get_db
 
+    # Auth middleware uses async_session_factory() directly (not get_db), so patch it
+    # so authenticated requests use the test DB instead of the default engine (e.g. 5432).
+    from src.middleware import auth as auth_middleware
+
+    test_session_factory = async_sessionmaker(
+        integration_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    _orig_auth_factory = auth_middleware.async_session_factory
+    auth_middleware.async_session_factory = test_session_factory
+
+    # Use test Redis URL so routes (e.g. doctor check_redis) connect to test Redis (6380).
+    from src.config import settings as app_settings
+
+    _orig_redis_url = app_settings.REDIS_URL
+    app_settings.REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6380")
+
     # Mock token blacklist to always return False (tokens are valid)
     patcher = patch("src.services.token_blacklist.is_token_revoked", new_callable=AsyncMock)
     mock_revoked = patcher.start()
@@ -534,15 +556,21 @@ async def test_client(
         # 5. Restore original dependency overrides
         app.dependency_overrides = original_overrides
 
-        # 6. Stop rate limit patch
+        # 6. Restore auth middleware session factory
+        auth_middleware.async_session_factory = _orig_auth_factory
+
+        # 6b. Restore Redis URL
+        app_settings.REDIS_URL = _orig_redis_url
+
+        # 7. Stop rate limit patch
         with contextlib.suppress(Exception):
             patch_rate_limit.stop()
 
-        # 7. Stop CSRF origin patch
+        # 8. Stop CSRF origin patch
         with contextlib.suppress(Exception):
             patch_cors.stop()
 
-        # 8. Expire all database objects in integration_db to prevent stale references
+        # 9. Expire all database objects in integration_db to prevent stale references
         with contextlib.suppress(Exception):
             integration_db.expire_all()
 

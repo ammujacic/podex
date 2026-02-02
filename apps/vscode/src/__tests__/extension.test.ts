@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Capture registered commands so we can invoke them
-const registeredCommands: Record<string, (...args: any[]) => any> = {};
+const registeredCommands: Record<string, (...args: unknown[]) => unknown> = {};
 
 const mockExecuteCommand = vi.fn();
 const mockShowWarningMessage = vi.fn();
@@ -18,6 +18,9 @@ const mockStatusBarItem = {
 
 // Basic event emitter for connection state
 type ConnectionListener = (state: { connected: boolean }) => void;
+interface MockGetCredentialsWithListener {
+  _listener?: (creds: unknown) => void;
+}
 let connectionListeners: ConnectionListener[] = [];
 
 vi.mock('vscode', () => ({
@@ -44,7 +47,7 @@ vi.mock('vscode', () => ({
     Left: 1,
   },
   commands: {
-    registerCommand: vi.fn((id: string, handler: (...args: any[]) => any) => {
+    registerCommand: vi.fn((id: string, handler: (...args: unknown[]) => unknown) => {
       registeredCommands[id] = handler;
       return { dispose: vi.fn() };
     }),
@@ -59,9 +62,9 @@ const mockGetCredentials = vi.fn();
 vi.mock('../adapters', () => ({
   initializeAuthProvider: vi.fn(() => ({
     isAuthenticated: mockIsAuthenticated,
-    onCredentialsChange: (cb: (creds: any) => void) => {
+    onCredentialsChange: (cb: (creds: unknown) => void) => {
       // For tests we can call this callback manually if needed
-      (mockGetCredentials as any)._listener = cb;
+      (mockGetCredentials as MockGetCredentialsWithListener)._listener = cb;
       return { dispose: vi.fn() };
     },
   })),
@@ -154,7 +157,7 @@ describe('extension activate/deactivate', () => {
     Object.keys(registeredCommands).forEach((k) => delete registeredCommands[k]);
     mockIsAuthenticated.mockReturnValue(false);
     mockGetCredentials.mockReturnValue(null);
-    (mockShowInformationMessage as any).mockResolvedValue(undefined);
+    vi.mocked(mockShowInformationMessage).mockResolvedValue(undefined);
   });
 
   it('activates extension and registers core commands', async () => {
@@ -256,7 +259,7 @@ describe('extension activate/deactivate', () => {
     const vscode = await import('vscode');
     const { activate } = await import('../extension');
     const context = {
-      subscriptions: [] as any[],
+      subscriptions: [] as vscode.Disposable[],
       extensionUri: vscode.Uri.parse('file:///fake'),
       globalState: { get: vi.fn().mockReturnValue(true), update: vi.fn() },
     } as unknown as vscode.ExtensionContext;
@@ -272,7 +275,7 @@ describe('extension activate/deactivate', () => {
     mockIsAuthenticated.mockReturnValue(true);
     mockGetCredentials.mockReturnValue({ userId: 'u1' });
     const context = {
-      subscriptions: [] as any[],
+      subscriptions: [] as vscode.Disposable[],
       extensionUri: vscode.Uri.parse('file:///fake'),
       globalState: { get: vi.fn().mockReturnValue(true), update: vi.fn() },
     } as unknown as vscode.ExtensionContext;
@@ -288,7 +291,7 @@ describe('extension activate/deactivate', () => {
     const vscode = await import('vscode');
     const { activate } = await import('../extension');
     const context = {
-      subscriptions: [] as any[],
+      subscriptions: [] as vscode.Disposable[],
       extensionUri: vscode.Uri.parse('file:///fake'),
       globalState: { get: vi.fn().mockReturnValue(true), update: vi.fn() },
     } as unknown as vscode.ExtensionContext;
@@ -305,7 +308,7 @@ describe('extension activate/deactivate', () => {
     const vscode = await import('vscode');
     const { activate } = await import('../extension');
     const context = {
-      subscriptions: [] as any[],
+      subscriptions: [] as vscode.Disposable[],
       extensionUri: vscode.Uri.parse('file:///fake'),
       globalState: { get: vi.fn().mockReturnValue(true), update: vi.fn() },
     } as unknown as vscode.ExtensionContext;
@@ -321,7 +324,7 @@ describe('extension activate/deactivate', () => {
     const vscode = await import('vscode');
     const { activate } = await import('../extension');
     const context = {
-      subscriptions: [] as any[],
+      subscriptions: [] as vscode.Disposable[],
       extensionUri: vscode.Uri.parse('file:///fake'),
       globalState: { get: vi.fn().mockReturnValue(true), update: vi.fn() },
     } as unknown as vscode.ExtensionContext;
@@ -337,15 +340,20 @@ describe('extension activate/deactivate', () => {
       get: vi.fn((_k: string, defaultValue: string) => defaultValue),
       update: mockUpdate,
     }));
-    vi.mocked(vscode.workspace.getConfiguration).mockImplementation(mockGetConfiguration as any);
+    vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
+      mockGetConfiguration as () => ReturnType<typeof vscode.workspace.getConfiguration>
+    );
     const { activate } = await import('../extension');
     const context = {
-      subscriptions: [] as any[],
+      subscriptions: [] as vscode.Disposable[],
       extensionUri: vscode.Uri.parse('file:///fake'),
       globalState: { get: vi.fn().mockReturnValue(true), update: vi.fn() },
     } as unknown as vscode.ExtensionContext;
     await activate(context);
-    registeredCommands['podex.connectLocalPod']({ pid: 123, port: 9999 } as any);
+    registeredCommands['podex.connectLocalPod']({ pid: 123, port: 9999 } as {
+      pid: number;
+      port: number;
+    });
     expect(mockUpdate).toHaveBeenCalledWith('apiUrl', 'http://127.0.0.1:9999', true);
     expect(mockShowInformationMessage).toHaveBeenCalledWith(
       expect.stringContaining('Connected to local pod on port 9999')
@@ -357,7 +365,7 @@ describe('extension activate/deactivate', () => {
     const { activate } = await import('../extension');
     mockIsAuthenticated.mockReturnValue(true);
     const context = {
-      subscriptions: [] as any[],
+      subscriptions: [] as vscode.Disposable[],
       extensionUri: vscode.Uri.parse('file:///fake'),
       globalState: { get: vi.fn().mockReturnValue(true), update: vi.fn() },
     } as unknown as vscode.ExtensionContext;
@@ -371,7 +379,7 @@ describe('extension activate/deactivate', () => {
     const { activate } = await import('../extension');
     mockIsAuthenticated.mockReturnValue(false);
     const context = {
-      subscriptions: [] as any[],
+      subscriptions: [] as vscode.Disposable[],
       extensionUri: vscode.Uri.parse('file:///fake'),
       globalState: { get: vi.fn().mockReturnValue(true), update: vi.fn() },
     } as unknown as vscode.ExtensionContext;

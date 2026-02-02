@@ -25,7 +25,7 @@ import {
   type AgentOption,
   type AgentRole,
   type AgentStatus,
-} from './agentConstants';
+} from '@/lib/agentConstants';
 import { useConfigStore } from '@/stores/config';
 
 interface CreateAgentModalProps {

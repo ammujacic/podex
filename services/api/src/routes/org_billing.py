@@ -6,7 +6,6 @@ from typing import Annotated, Any
 import stripe
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -227,7 +226,7 @@ async def get_or_create_org_stripe_customer(db: AsyncSession, org: Organization,
             org_id=str(org.id),
             customer_id=customer.id,
         )
-        return customer.id  # noqa: TRY300
+        return str(customer.id)
     except stripe.error.StripeError as e:
         logger.exception("Failed to create Stripe customer", error=str(e))
         raise HTTPException(status_code=500, detail="Failed to create billing account") from e
@@ -277,7 +276,7 @@ async def get_org_subscription(
     subscription = sub_result.scalar_one_or_none()
 
     if not subscription:
-        return JSONResponse(status_code=200, content=None)
+        return None
 
     # Get plan details
     plan_result = await db.execute(
@@ -286,7 +285,7 @@ async def get_org_subscription(
     plan = plan_result.scalar_one_or_none()
 
     if not plan:
-        return JSONResponse(status_code=200, content=None)
+        return None
 
     return OrgSubscriptionResponse(
         id=str(subscription.id),
@@ -483,8 +482,7 @@ async def create_org_credits_checkout(
         session_id=session.id,
     )
 
-    body = CheckoutResponse(url=session.url or "", session_id=session.id)
-    return JSONResponse(status_code=200, content=body.model_dump(mode="json"))
+    return CheckoutResponse(url=session.url or "", session_id=session.id)
 
 
 @router.post("/{org_id}/billing/portal", response_model=PortalResponse)
@@ -548,9 +546,8 @@ async def list_org_payment_methods(
     org, _ = await get_org_and_verify_owner(db, org_id, str(user.id))
 
     if not org.stripe_customer_id:
-        # Org has no Stripe customer yet; return empty list (explicit Response for middleware)
-        body = OrgPaymentMethodsListResponse(payment_methods=[], default_payment_method_id=None)
-        return JSONResponse(status_code=200, content=body.model_dump(mode="json"))
+        # Org has no Stripe customer yet; return empty list
+        return OrgPaymentMethodsListResponse(payment_methods=[], default_payment_method_id=None)
 
     try:
         # Get customer to find default payment method
@@ -696,11 +693,13 @@ async def update_org_seats(
         try:
             # Get the subscription to find the subscription item
             stripe_sub = stripe.Subscription.retrieve(subscription.stripe_subscription_id)
+            items_obj = getattr(stripe_sub, "items", None)
+            items_data = getattr(items_obj, "data", []) if items_obj else []
 
-            if stripe_sub.items and stripe_sub.items.data:
+            if items_data:
                 # Update the quantity of the first item (seats)
                 stripe.SubscriptionItem.modify(
-                    stripe_sub.items.data[0].id,
+                    items_data[0].id,
                     quantity=data.seat_count,
                     proration_behavior="create_prorations",
                 )

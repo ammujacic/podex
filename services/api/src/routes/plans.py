@@ -148,6 +148,7 @@ async def list_pending_plans(
     session_id: UUID,
     db: DbSession,
     current_user: CurrentUser,
+    limit: int = Query(default=100, ge=1, le=500),
 ) -> list[PlanResponse]:
     """List plans pending approval."""
     # Verify session access
@@ -164,6 +165,7 @@ async def list_pending_plans(
             ExecutionPlan.status == "pending_approval",
         )
         .order_by(ExecutionPlan.created_at.desc())
+        .limit(limit)
     )
 
     result = await db.execute(query)

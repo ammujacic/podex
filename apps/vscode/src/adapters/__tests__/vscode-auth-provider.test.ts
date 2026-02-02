@@ -8,7 +8,7 @@ const mockWatch = vi.fn();
 vi.mock('fs', () => ({
   existsSync: mockExistsSync,
   mkdirSync: mockMkdirSync,
-  watch: (...args: any[]) => mockWatch(...args),
+  watch: (...args: unknown[]) => mockWatch(...args),
 }));
 
 const mockCreateOutputChannel = vi.fn(() => ({
@@ -87,7 +87,10 @@ describe('VSCodeAuthProvider', () => {
       if (typeof original === 'function') {
         // Keep reference to original callback
         mockWatch.mockImplementation((path: string, cb: (event: string, file: string) => void) => {
-          return (original as any)(path, cb);
+          return (original as (path: string, cb: (event: string, file: string) => void) => unknown)(
+            path,
+            cb
+          );
         });
       }
     }

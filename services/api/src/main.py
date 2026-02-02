@@ -648,6 +648,7 @@ async def credit_enforcement_background_task() -> None:
     workspaces from 'running' to 'stopped'. Local-pod workspaces are not affected.
 
     SCALING: Uses distributed locking so only one instance runs each cycle.
+    SCALING: Processes workspaces in batches to handle large user bases.
     """
 
     from sqlalchemy import select
@@ -657,6 +658,9 @@ async def credit_enforcement_background_task() -> None:
     from src.database.models import Workspace
     from src.services.credit_enforcement import get_users_with_exhausted_credits
     from src.websocket.hub import emit_to_session
+
+    # SCALING: Batch size for processing workspaces
+    batch_size = 100
 
     while True:
         try:
@@ -682,75 +686,75 @@ async def credit_enforcement_background_task() -> None:
                             user_count=len(exhausted_users),
                         )
 
-                        # For each exhausted user, find and stop their running compute workspaces
-                        for user_id in exhausted_users:
-                            # Find running *cloud* workspaces owned by this user
-                            query = (
-                                select(Workspace, SessionModel)
-                                .join(SessionModel, SessionModel.workspace_id == Workspace.id)
-                                .where(
-                                    SessionModel.owner_id == user_id,
-                                    Workspace.status == "running",
-                                    Workspace.local_pod_id.is_(None),
-                                )
+                        # SCALING: Query all workspaces for all exhausted users in one query
+                        # instead of N+1 queries (one per user), then process in batches
+                        query = (
+                            select(Workspace, SessionModel)
+                            .join(SessionModel, SessionModel.workspace_id == Workspace.id)
+                            .where(
+                                SessionModel.owner_id.in_(exhausted_users),
+                                Workspace.status == "running",
+                                Workspace.local_pod_id.is_(None),
                             )
+                            .limit(batch_size)
+                        )
 
-                            result = await db.execute(query)
-                            rows = result.all()
+                        result = await db.execute(query)
+                        rows = result.all()
 
-                            for workspace, session in rows:
+                        for workspace, session in rows:
+                            try:
+                                from src.exceptions import ComputeServiceHTTPError
+
+                                user_id = session.owner_id
+
+                                # Stop the container in the compute service
                                 try:
-                                    from src.exceptions import ComputeServiceHTTPError
+                                    compute = await get_compute_client_for_workspace(workspace.id)
+                                    await compute.stop_workspace(workspace.id, user_id)
+                                except ComputeServiceHTTPError as compute_error:
+                                    # If workspace doesn't exist (404), it's already stopped
+                                    if compute_error.status_code != 404:
+                                        raise compute_error  # noqa: TRY201
 
-                                    # Stop the container in the compute service
-                                    try:
-                                        compute = await get_compute_client_for_workspace(
-                                            workspace.id
-                                        )
-                                        await compute.stop_workspace(workspace.id, user_id)
-                                    except ComputeServiceHTTPError as compute_error:
-                                        # If workspace doesn't exist (404), it's already stopped
-                                        if compute_error.status_code != 404:
-                                            raise compute_error  # noqa: TRY201
+                                # Update database: normalize to explicit 'stopped' state
+                                workspace.status = "stopped"
+                                workspace.standby_at = None
 
-                                    # Update database: normalize to explicit 'stopped' state
-                                    workspace.status = "stopped"
-                                    workspace.standby_at = None
+                                # Notify connected clients about billing stop
+                                await emit_to_session(
+                                    str(session.id),
+                                    "workspace_billing_standby",
+                                    {
+                                        "workspace_id": workspace.id,
+                                        "status": "stopped",
+                                        "reason": "credit_exhaustion",
+                                        "message": (
+                                            "Your cloud workspace has been stopped due to "
+                                            "insufficient compute credits. Please upgrade your "
+                                            "plan or add credits to resume."
+                                        ),
+                                        "standby_at": None,
+                                        "upgrade_url": "/settings/plans",
+                                        "add_credits_url": "/settings/billing",
+                                    },
+                                )
 
-                                    # Notify connected clients about billing stop
-                                    await emit_to_session(
-                                        str(session.id),
-                                        "workspace_billing_standby",
-                                        {
-                                            "workspace_id": workspace.id,
-                                            "status": "stopped",
-                                            "reason": "credit_exhaustion",
-                                            "message": (
-                                                "Your cloud workspace has been stopped due to "
-                                                "insufficient compute credits. Please upgrade your "
-                                                "plan or add credits to resume."
-                                            ),
-                                            "standby_at": None,
-                                            "upgrade_url": "/settings/plans",
-                                            "add_credits_url": "/settings/billing",
-                                        },
-                                    )
+                                standby_count += 1
+                                logger.info(
+                                    "Stopped workspace due to credit exhaustion",
+                                    workspace_id=workspace.id,
+                                    session_id=str(session.id),
+                                    user_id=user_id,
+                                )
 
-                                    standby_count += 1
-                                    logger.info(
-                                        "Stopped workspace due to credit exhaustion",
-                                        workspace_id=workspace.id,
-                                        session_id=str(session.id),
-                                        user_id=user_id,
-                                    )
-
-                                except Exception as e:
-                                    logger.exception(
-                                        "Failed to move workspace to standby for billing",
-                                        workspace_id=workspace.id,
-                                        user_id=user_id,
-                                        error=str(e),
-                                    )
+                            except Exception as e:
+                                logger.exception(
+                                    "Failed to move workspace to standby for billing",
+                                    workspace_id=workspace.id,
+                                    user_id=session.owner_id,
+                                    error=str(e),
+                                )
 
                         if standby_count > 0:
                             await db.commit()
@@ -778,6 +782,8 @@ async def standby_background_task() -> None:
 
     Runs every 60 seconds to check for workspaces that have been idle
     longer than their configured standby timeout.
+
+    SCALING: Processes workspaces in batches to handle large deployments.
     """
     from datetime import UTC, datetime, timedelta
 
@@ -786,6 +792,9 @@ async def standby_background_task() -> None:
     from src.compute_client import get_compute_client_for_workspace
     from src.database.models import Session as SessionModel
     from src.database.models import UserConfig, Workspace
+
+    # SCALING: Batch size for processing workspaces
+    batch_size = 200
 
     while True:
         try:
@@ -796,12 +805,14 @@ async def standby_background_task() -> None:
                     now = datetime.now(UTC)
                     standby_count = 0
 
-                    # Find running workspaces with sessions
+                    # SCALING: Find running workspaces with sessions (limited batch)
+                    # We process in batches to avoid loading too many rows at once
                     query = (
                         select(Workspace, SessionModel, UserConfig)
                         .join(SessionModel, SessionModel.workspace_id == Workspace.id)
                         .outerjoin(UserConfig, UserConfig.user_id == SessionModel.owner_id)
                         .where(Workspace.status == "running")
+                        .limit(batch_size)
                     )
 
                     result = await db.execute(query)

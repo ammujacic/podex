@@ -1433,7 +1433,7 @@ async def delete_account(
                 import stripe  # noqa: PLC0415
 
                 stripe.api_key = settings.STRIPE_SECRET_KEY
-                stripe.Subscription.cancel(sub.stripe_subscription_id)
+                stripe.Subscription.delete(sub.stripe_subscription_id)
                 logger.info(
                     "Cancelled subscription during account deletion",
                     user_id=user_id[:8],

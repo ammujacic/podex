@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Image from 'next/image';
 import { X, Loader2, Copy, Download, Check, Shield, Smartphone, Key } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { setupMFA, verifyMFASetup, type MFASetupResponse } from '@/lib/api';
@@ -162,11 +163,14 @@ export function MFASetupModal({ isOpen, onClose, onSuccess }: MFASetupModalProps
                   1Password, etc.)
                 </p>
                 {setupData?.qr_code_base64 && (
-                  <div className="inline-block p-4 bg-white rounded-lg">
-                    <img
+                  <div className="relative inline-block p-4 bg-white rounded-lg w-48 h-48">
+                    <Image
                       src={`data:image/png;base64,${setupData.qr_code_base64}`}
                       alt="MFA QR Code"
-                      className="w-48 h-48"
+                      width={192}
+                      height={192}
+                      className="object-contain"
+                      unoptimized
                     />
                   </div>
                 )}

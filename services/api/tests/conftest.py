@@ -7,6 +7,12 @@ This module provides:
 - Test data fixtures
 """
 
+import os
+
+# Set test service URLs before any app/config imports so integration tests use test DB/Redis.
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost:5433/podex_test")
+os.environ.setdefault("REDIS_URL", "redis://localhost:6380")
+
 import asyncio
 import time
 import warnings

@@ -704,7 +704,8 @@ async def expire_credits(db: AsyncSession) -> int:
 async def update_expiring_soon_credits(db: AsyncSession) -> int:
     """Update expiring_soon_cents for all credit balances.
 
-    Calculates credits expiring in the next 30 days.
+    Calculates credits expiring in the next 30 days using a single aggregated
+    query to avoid N+1 performance issues.
 
     Returns:
         Number of balances updated
@@ -714,27 +715,37 @@ async def update_expiring_soon_credits(db: AsyncSession) -> int:
     now = datetime.now(UTC)
     thirty_days = now + timedelta(days=30)
 
-    # Get all users with credit balances
-    balance_result = await db.execute(select(CreditBalance))
-    balances = balance_result.scalars().all()
+    # Use a single aggregated query with subquery to calculate expiring credits
+    # for all users at once, avoiding N+1 queries
+    expiring_subquery = (
+        select(
+            CreditTransaction.user_id,
+            sqlfunc.coalesce(sqlfunc.sum(CreditTransaction.amount_cents), 0).label("expiring_soon"),
+        )
+        .where(
+            CreditTransaction.expires_at.isnot(None),
+            CreditTransaction.expires_at > now,
+            CreditTransaction.expires_at <= thirty_days,
+            CreditTransaction.expired == False,
+            CreditTransaction.amount_cents > 0,
+        )
+        .group_by(CreditTransaction.user_id)
+        .subquery()
+    )
+
+    # Get all balances with their calculated expiring_soon amounts in one query
+    balance_query = select(
+        CreditBalance,
+        sqlfunc.coalesce(expiring_subquery.c.expiring_soon, 0).label("new_expiring_soon"),
+    ).outerjoin(expiring_subquery, CreditBalance.user_id == expiring_subquery.c.user_id)
+
+    result = await db.execute(balance_query)
+    rows = result.all()
 
     updated_count = 0
-    for balance in balances:
-        # Calculate expiring soon amount for this user
-        expiring_result = await db.execute(
-            select(sqlfunc.coalesce(sqlfunc.sum(CreditTransaction.amount_cents), 0)).where(
-                CreditTransaction.user_id == balance.user_id,
-                CreditTransaction.expires_at.isnot(None),
-                CreditTransaction.expires_at > now,
-                CreditTransaction.expires_at <= thirty_days,
-                CreditTransaction.expired == False,
-                CreditTransaction.amount_cents > 0,
-            )
-        )
-        expiring_soon = expiring_result.scalar() or 0
-
-        if balance.expiring_soon_cents != expiring_soon:
-            balance.expiring_soon_cents = expiring_soon
+    for balance, new_expiring_soon in rows:
+        if balance.expiring_soon_cents != new_expiring_soon:
+            balance.expiring_soon_cents = new_expiring_soon
             updated_count += 1
 
     return updated_count
