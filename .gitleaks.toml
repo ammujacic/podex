@@ -6,6 +6,7 @@ useDefault = true
 
 [allowlist]
 description = "Global allowlist for Podex false positives"
+regexTarget = "match"
 
 # Paths to exclude from scanning (regex patterns)
 paths = [
