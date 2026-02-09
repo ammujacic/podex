@@ -1,0 +1,160 @@
+/**
+ * App-level styles for the workspace.
+ */
+
+/* Workspace container */
+.workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.workspace__header {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background-color: var(--vscode-sideBar-background);
+}
+
+.workspace__header h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+/* Empty state */
+.workspace__empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 32px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.workspace__empty-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+.workspace__empty h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.workspace__empty p {
+  margin: 0;
+  font-size: 14px;
+}
+
+/* Approval prompt */
+.approval-prompt {
+  padding: 12px;
+  margin: 8px;
+  border-radius: 6px;
+  background-color: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder);
+}
+
+.approval-prompt__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.approval-prompt__icon {
+  font-size: 16px;
+}
+
+.approval-prompt__title {
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.approval-prompt__content {
+  margin-bottom: 12px;
+}
+
+.approval-prompt__agent {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.approval-prompt__description {
+  margin-bottom: 8px;
+  color: var(--vscode-foreground);
+}
+
+.approval-prompt__tool {
+  margin-bottom: 8px;
+}
+
+.approval-prompt__tool code {
+  background-color: var(--vscode-textCodeBlock-background);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 12px;
+}
+
+.approval-prompt__input {
+  background-color: var(--vscode-textCodeBlock-background);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  padding: 8px;
+  margin: 0;
+  overflow-x: auto;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 12px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.approval-prompt__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.approval-prompt__button {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 3px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.approval-prompt__button--deny {
+  background-color: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+.approval-prompt__button--deny:hover {
+  background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.approval-prompt__button--allow {
+  background-color: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+.approval-prompt__button--allow:hover {
+  background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+.approval-prompt__button--approve {
+  background-color: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.approval-prompt__button--approve:hover {
+  background-color: var(--vscode-button-hoverBackground);
+}

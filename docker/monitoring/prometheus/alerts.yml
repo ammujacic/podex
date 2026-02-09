@@ -1,0 +1,194 @@
+groups:
+  # =================================================================
+  # Infrastructure Alerts
+  # =================================================================
+  - name: infrastructure
+    rules:
+      - alert: InstanceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Instance {{ $labels.instance }} is down"
+          description: "{{ $labels.instance }} of job {{ $labels.job }} has been down for more than 2 minutes."
+
+      - alert: HighCpuUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is above 80% for more than 5 minutes. Current: {{ $value | printf \"%.1f\" }}%"
+
+      - alert: CriticalCpuUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is above 95% for more than 2 minutes. Current: {{ $value | printf \"%.1f\" }}%"
+
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is above 85% for more than 5 minutes. Current: {{ $value | printf \"%.1f\" }}%"
+
+      - alert: CriticalMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 95
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical memory usage on {{ $labels.instance }}"
+          description: "Memory usage is above 95%. Current: {{ $value | printf \"%.1f\" }}%"
+
+      - alert: DiskSpaceLow
+        expr: (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"})) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Disk usage is above 85% on {{ $labels.mountpoint }}. Current: {{ $value | printf \"%.1f\" }}%"
+
+      - alert: DiskSpaceCritical
+        expr: (1 - (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay"})) * 100 > 95
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical disk space on {{ $labels.instance }}"
+          description: "Disk usage is above 95% on {{ $labels.mountpoint }}!"
+
+      - alert: HighNetworkTraffic
+        expr: (rate(node_network_receive_bytes_total[5m]) + rate(node_network_transmit_bytes_total[5m])) / 1024 / 1024 > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High network traffic on {{ $labels.instance }}"
+          description: "Network traffic is above 100 MB/s"
+
+  # =================================================================
+  # Container Alerts
+  # =================================================================
+  - name: containers
+    rules:
+      - alert: ContainerKilled
+        # Alert on containers that disappeared unexpectedly
+        # Filters: named containers only, excludes pause/POD/buildkit containers
+        # Threshold: 2 minutes missing, must persist for 2 more minutes
+        expr: time() - container_last_seen{name!="", name!~".*POD.*|.*pause.*|.*buildkit.*|.*-build-.*"} > 120
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container killed ({{ $labels.name }})"
+          description: "Container {{ $labels.name }} has been missing for more than 4 minutes"
+
+      - alert: ContainerHighCpu
+        expr: (sum(rate(container_cpu_usage_seconds_total{name!=""}[3m])) BY (instance, name) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container high CPU ({{ $labels.name }})"
+          description: "Container {{ $labels.name }} CPU usage is above 80%"
+
+      - alert: ContainerHighMemory
+        expr: (sum(container_memory_working_set_bytes{name!=""}) BY (instance, name) / sum(container_spec_memory_limit_bytes{name!=""} > 0) BY (instance, name) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container high memory ({{ $labels.name }})"
+          description: "Container {{ $labels.name }} memory usage is above 80%"
+
+      - alert: ContainerVolumeUsage
+        expr: (1 - (sum(container_fs_inodes_free{name!=""}) BY (instance) / sum(container_fs_inodes_total) BY (instance))) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container volume running out of inodes"
+          description: "Container volume inode usage is above 80%"
+
+  # =================================================================
+  # Podex Service Alerts
+  # =================================================================
+  - name: podex-services
+    rules:
+      - alert: PodexApiDown
+        expr: absent(up{job="podex-api"}) or up{job="podex-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Podex API is down"
+          description: "The Podex API service is not responding"
+
+      - alert: PodexComputeDown
+        expr: absent(up{job="podex-compute"}) or up{job="podex-compute"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Podex Compute service is down"
+          description: "The Podex Compute service is not responding"
+
+      - alert: HighApiLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="podex-api"}[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API latency"
+          description: "95th percentile API latency is above 2 seconds"
+
+      - alert: HighErrorRate
+        expr: sum(rate(http_requests_total{job="podex-api",status=~"5.."}[5m])) / sum(rate(http_requests_total{job="podex-api"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate on Podex API"
+          description: "Error rate is above 5%"
+
+  # =================================================================
+  # Workspace Alerts
+  # =================================================================
+  - name: workspaces
+    rules:
+      - alert: WorkspaceServerDown
+        expr: up{role="workspace"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Workspace server {{ $labels.server }} is down"
+          description: "Workspace server {{ $labels.server }} is not responding"
+
+      - alert: WorkspaceServerHighLoad
+        expr: node_load15{role="workspace"} / count without(cpu) (node_cpu_seconds_total{mode="idle",role="workspace"}) > 0.9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High load on workspace server {{ $labels.server }}"
+          description: "15-minute load average is above 90% of CPU capacity"
+
+      - alert: TooManyWorkspaceContainers
+        expr: count(container_last_seen{name=~"ws-.*"}) by (instance) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Too many workspace containers on {{ $labels.instance }}"
+          description: "More than 50 workspace containers running"

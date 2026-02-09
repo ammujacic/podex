@@ -1,0 +1,383 @@
+# Docker Compose for Testing Environment
+# Run with: docker-compose -f docker-compose.test.yml up -d
+#
+# This compose file provides all the infrastructure needed for:
+# - Unit tests (mocked external services)
+# - Integration tests (real database, redis, localstack)
+# - E2E tests (full stack running)
+
+services:
+  # === DATABASE (Test) ===
+  postgres-test:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: podex_test
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test -d podex_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    networks:
+      - podex-test
+
+  # === CACHE (Test) ===
+  redis-test:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    networks:
+      - podex-test
+
+  # === MAILHOG (Email Testing) ===
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025"  # SMTP server
+      - "8025:8025"  # Web UI
+    networks:
+      - podex-test
+
+  # === STRIPE MOCK ===
+  stripe-mock:
+    image: stripe/stripe-mock:latest
+    ports:
+      - "12111:12111"
+      - "12112:12112"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:12111/v1/customers"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - podex-test
+
+  # === API SERVICE (Test) ===
+  api-test:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+      target: development
+    ports:
+      - "3011:3001"
+    environment:
+      ENVIRONMENT: test
+      PORT: 3001
+      RUN_MIGRATIONS: "false"  # Tests use SQLAlchemy create_all()
+      DATABASE_URL: postgresql+asyncpg://test:test@postgres-test:5432/podex_test
+      REDIS_URL: redis://redis-test:6379
+      # GCP Configuration
+      GCP_PROJECT_ID: podex-test
+      GCP_REGION: us-east1
+      # CORS
+      CORS_ORIGINS: '["http://localhost:3000", "http://localhost:3010"]'
+      # Auth
+      JWT_SECRET_KEY: test-secret-key-for-testing
+      FRONTEND_URL: http://localhost:3010
+      # Email
+      SMTP_HOST: mailhog
+      SMTP_PORT: 1025
+      SMTP_USE_TLS: "false"
+      # Stripe Mock
+      STRIPE_SECRET_KEY: sk_test_mock
+      STRIPE_API_BASE: http://stripe-mock:12111
+      STRIPE_WEBHOOK_SECRET: whsec_test
+      # Internal service token for billing
+      INTERNAL_SERVICE_TOKEN: test-internal-service-token
+      # Internal service URLs
+      AGENT_SERVICE_URL: http://agent-test:3002
+    volumes:
+      - ./services/api/src:/app/services/api/src
+      - ./services/api/migrations:/app/services/api/migrations
+      - ./services/shared/src:/app/services/shared/src
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - podex-test
+    profiles:
+      - integration
+      - e2e
+
+  # === AGENT SERVICE (Test) ===
+  agent-test:
+    build:
+      context: .
+      dockerfile: services/agent/Dockerfile
+      target: development
+    ports:
+      - "3012:3002"
+    environment:
+      ENVIRONMENT: test
+      PORT: 3002
+      DATABASE_URL: postgresql+asyncpg://test:test@postgres-test:5432/podex_test
+      REDIS_URL: redis://redis-test:6379
+      # GCP Configuration
+      GCP_PROJECT_ID: podex-test
+      GCP_REGION: us-east1
+      # Mock API key for testing
+      ANTHROPIC_API_KEY: sk-ant-test-mock-key
+      OPENAI_API_KEY: sk-test-mock-key
+      # API Service (for usage tracking)
+      API_BASE_URL: http://api-test:3001
+      INTERNAL_SERVICE_TOKEN: test-internal-service-token
+    volumes:
+      - ./services/agent/src:/app/services/agent/src
+      - ./services/shared/src:/app/services/shared/src
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - podex-test
+    profiles:
+      - integration
+      - e2e
+
+  # === COMPUTE SERVICE (Test) ===
+  compute-test:
+    build:
+      context: .
+      dockerfile: services/compute/Dockerfile
+      target: development
+    ports:
+      - "3013:3003"
+    environment:
+      COMPUTE_ENVIRONMENT: development
+      COMPUTE_MODE: mock
+      COMPUTE_REDIS_URL: redis://redis-test:6379
+      # GCP Configuration
+      GCP_PROJECT_ID: podex-test
+      GCP_REGION: us-east1
+      COMPUTE_CORS_ORIGINS: '["http://localhost:3000", "http://localhost:3010"]'
+      # API Service (for usage tracking)
+      COMPUTE_API_BASE_URL: http://api-test:3001
+      INTERNAL_SERVICE_TOKEN: test-internal-service-token
+    volumes:
+      - ./services/compute/src:/app/services/compute/src
+      - ./services/shared/src:/app/services/shared/src
+    depends_on:
+      redis-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - podex-test
+    profiles:
+      - integration
+      - e2e
+
+  # === WEB FRONTEND (Test) ===
+  web-test:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: development
+    ports:
+      - "3010:3000"
+    environment:
+      NODE_ENV: test
+      NEXT_PUBLIC_API_URL: http://localhost:3011
+      NEXT_PUBLIC_ENVIRONMENT: test
+    volumes:
+      - ./apps/web/src:/app/apps/web/src
+      - ./packages:/app/packages
+    depends_on:
+      api-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    networks:
+      - podex-test
+    profiles:
+      - e2e
+
+  # === TEST RUNNER (Backend) ===
+  test-backend:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+      target: development
+    working_dir: /app/services/api
+    command: >
+      bash -c "
+        echo 'Waiting for services...' &&
+        sleep 5 &&
+        echo 'Running API tests...' &&
+        uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html &&
+        echo 'API tests complete!'
+      "
+    environment:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+asyncpg://test:test@postgres-test:5432/podex_test
+      REDIS_URL: redis://redis-test:6379
+      # GCP Configuration
+      GCP_PROJECT_ID: podex-test
+      GCP_REGION: us-east1
+      JWT_SECRET_KEY: test-secret-key-for-testing
+      STRIPE_SECRET_KEY: sk_test_mock
+      STRIPE_API_BASE: http://stripe-mock:12111
+      INTERNAL_SERVICE_TOKEN: test-internal-service-token
+    volumes:
+      - ./services/api:/app/services/api
+      - ./services/shared:/app/services/shared
+      - test-coverage:/app/coverage
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+      stripe-mock:
+        condition: service_healthy
+    networks:
+      - podex-test
+    profiles:
+      - test-backend
+
+  # === TEST RUNNER (Agent) ===
+  test-agent:
+    build:
+      context: .
+      dockerfile: services/agent/Dockerfile
+      target: development
+    working_dir: /app/services/agent
+    command: >
+      bash -c "
+        echo 'Waiting for services...' &&
+        sleep 5 &&
+        echo 'Running Agent tests...' &&
+        uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html &&
+        echo 'Agent tests complete!'
+      "
+    environment:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+asyncpg://test:test@postgres-test:5432/podex_test
+      REDIS_URL: redis://redis-test:6379
+      # GCP Configuration
+      GCP_PROJECT_ID: podex-test
+      GCP_REGION: us-east1
+      ANTHROPIC_API_KEY: sk-ant-test-mock-key
+      # API Service (for usage tracking)
+      API_BASE_URL: http://api-test:3001
+      INTERNAL_SERVICE_TOKEN: test-internal-service-token
+    volumes:
+      - ./services/agent:/app/services/agent
+      - ./services/shared:/app/services/shared
+      - test-coverage:/app/coverage
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    networks:
+      - podex-test
+    profiles:
+      - test-agent
+
+  # === TEST RUNNER (Compute) ===
+  test-compute:
+    build:
+      context: .
+      dockerfile: services/compute/Dockerfile
+      target: development
+    working_dir: /app/services/compute
+    command: >
+      bash -c "
+        echo 'Waiting for Redis...' &&
+        sleep 5 &&
+        echo 'Running Compute tests...' &&
+        uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html --cov-report=term-missing;
+        EXIT_CODE=$$?;
+        if [ $$EXIT_CODE -eq 0 ]; then
+          echo 'Compute tests complete! - PASSED';
+        else
+          echo 'Compute tests complete! - FAILED';
+        fi;
+        exit $$EXIT_CODE
+      "
+    environment:
+      COMPUTE_ENVIRONMENT: development
+      COMPUTE_MODE: docker
+      COMPUTE_REDIS_URL: redis://redis-test:6379
+      COMPUTE_DOCKER_HOST: unix:///var/run/docker.sock
+      COMPUTE_API_BASE_URL: http://localhost:3001
+      INTERNAL_SERVICE_TOKEN: test-internal-service-token
+      # GCP Configuration (for tests)
+      GCP_PROJECT_ID: podex-test
+      GCP_REGION: us-east1
+    volumes:
+      - ./services/compute:/app/services/compute
+      - ./services/shared:/app/services/shared
+      - /var/run/docker.sock:/var/run/docker.sock  # Host Docker access
+      - test-coverage:/app/coverage
+    depends_on:
+      redis-test:
+        condition: service_healthy
+    networks:
+      - podex-test
+    profiles:
+      - test-compute
+
+  # === TEST RUNNER (Local Pod) ===
+  test-local-pod:
+    build:
+      context: .
+      dockerfile: services/local-pod/Dockerfile
+      target: development
+    working_dir: /app/services/local-pod
+    command: >
+      bash -c "
+        echo 'Running local-pod tests...' &&
+        uv run pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=xml --cov-report=html &&
+        echo 'Local-pod tests complete!'
+      "
+    environment:
+      PODEX_POD_TOKEN: pdx_pod_test_token
+      PODEX_CLOUD_URL: http://localhost:3001
+      PODEX_MAX_WORKSPACES: 3
+    volumes:
+      - ./services/local-pod:/app/services/local-pod
+      - /var/run/docker.sock:/var/run/docker.sock  # For integration tests
+      - test-coverage:/app/coverage
+    networks:
+      - podex-test
+    profiles:
+      - test-local-pod
+
+networks:
+  podex-test:
+    name: podex-test
+
+volumes:
+  test-coverage:

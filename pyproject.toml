@@ -1,0 +1,120 @@
+[project]
+name = "podex"
+version = "0.1.0"
+description = "Podex - AI-powered development environment"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "requests>=2.31.0",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "B", "C4", "UP", "ARG", "SIM",
+    "TCH", "PTH", "ERA", "PL", "RUF", "S",
+]
+ignore = [
+    # Code complexity - acceptable in this codebase
+    "PLR0911",  # Too many return statements
+    "PLR0912",  # Too many branches
+    "PLR0913",  # Too many arguments
+    "PLR0915",  # Too many statements
+    "PLR2004",  # Magic value in comparison
+    # Design patterns
+    "PLW0603",  # Global statement (singleton pattern)
+    "PLC0415",  # Import not at top level (lazy loading)
+    "PLW2901",  # Loop variable overwritten
+    # Style preferences
+    "RUF012",   # Mutable class attributes should use ClassVar
+    "C401",     # Unnecessary generator (set comprehension)
+    "B905",     # zip() without strict parameter
+    "SIM102",   # Use single if instead of nested if
+    "SIM103",   # Return condition directly
+    "SIM105",   # Use contextlib.suppress
+    "S324",     # Insecure hash function (md5 used for non-crypto)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src", "podex_shared"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files: allow assert statements (S101) and magic values like HTTP status codes (PLR2004)
+"**/tests/**/*.py" = ["S101", "PLR2004"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+show_error_codes = true
+exclude = [
+    "migrations/",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    # Third-party libraries without stubs
+    "redis.*",
+    "structlog.*",
+    "anthropic.*",
+    "openai.*",
+    "litellm.*",
+    "arq.*",
+    "sentry_sdk.*",
+    "bs4",
+    "bs4.*",
+    "duckduckgo_search",
+    "duckduckgo_search.*",
+    "playwright",
+    "playwright.*",
+    "aiohttp",
+    "aiohttp.*",
+    "socketio.*",
+    "jose.*",
+    "jwt.*",
+    "docker.*",
+    "websockets.*",
+    "slowapi",
+    "slowapi.*",
+    "psutil",
+    "psutil.*",
+    "aiofiles",
+    "aiofiles.*",
+    "click",
+    "click.*",
+    # Internal packages
+    "podex_shared",
+    "podex_shared.*",
+    "podex_local_pod",
+    "podex_local_pod.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "services.api.src.websocket.hub",
+    "services.api.src.websocket.local_pod_hub",
+    "src.websocket.hub",
+    "src.websocket.local_pod_hub",
+    "podex_local_pod.client",
+]
+disallow_untyped_decorators = false
+disallow_subclassing_any = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "local_only: marks tests that require local services (Ollama) and should not run in CI",
+    "integration: marks tests as integration tests (may require services)",
+    "e2e: marks tests as end-to-end tests",
+    "slow: marks tests as slow running",
+    "agent: marks tests related to agent functionality",
+]
+addopts = "-v --strict-markers --tb=short"

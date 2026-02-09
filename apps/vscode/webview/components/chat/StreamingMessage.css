@@ -1,0 +1,86 @@
+/**
+ * Streaming message styles.
+ */
+
+.streaming-message {
+  padding: 8px 12px;
+  margin: 4px 0;
+  border-radius: 6px;
+  background-color: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border);
+}
+
+.streaming-message__agent {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  opacity: 0.9;
+}
+
+.streaming-message__content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+/* Blinking cursor */
+.streaming-message__cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background-color: var(--vscode-editorCursor-foreground);
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Thinking indicator */
+.thinking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+}
+
+.thinking-indicator__agent {
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  font-style: normal;
+}
+
+.thinking-indicator__dots {
+  display: inline-flex;
+}
+
+.thinking-indicator__dots span {
+  animation: dot-bounce 1.4s ease-in-out infinite;
+}
+
+.thinking-indicator__dots span:nth-child(1) {
+  animation-delay: 0s;
+}
+
+.thinking-indicator__dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.thinking-indicator__dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes dot-bounce {
+  0%, 80%, 100% {
+    opacity: 0.3;
+  }
+  40% {
+    opacity: 1;
+  }
+}

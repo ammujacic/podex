@@ -1,0 +1,72 @@
+"""Comprehensive tests for compute service configuration."""
+
+import pytest
+
+from src.config import Settings
+
+
+class TestSettingsDefaults:
+    """Tests for default settings values."""
+
+    def test_environment_default(self) -> None:
+        """Test default environment."""
+        settings = Settings()
+        assert settings.environment == "development"
+
+    def test_debug_default(self) -> None:
+        """Test default debug mode."""
+        settings = Settings()
+        assert settings.debug is False
+
+    def test_workspace_settings_defaults(self) -> None:
+        """Test default workspace settings."""
+        settings = Settings()
+        assert settings.max_workspaces == 10
+        # Fallback image - production images are configured per-server in database
+        assert settings.workspace_image == "ghcr.io/mujacica/workspace:latest"
+        # Workspace servers are now fetched from API database (admin UI)
+        # Compute service syncs server list from API at startup and periodically
+        assert settings.server_sync_interval == 30
+
+    def test_redis_settings_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test default Redis settings."""
+        # Clear env var that may override the default
+        monkeypatch.delenv("COMPUTE_REDIS_URL", raising=False)
+        settings = Settings()
+        assert settings.redis_url == "redis://localhost:6379"
+
+class TestSettingsCustom:
+    """Tests for custom settings values."""
+
+    def test_custom_environment(self) -> None:
+        """Test custom environment setting."""
+        settings = Settings(environment="production")
+        assert settings.environment == "production"
+
+    def test_custom_workspace_settings(self) -> None:
+        """Test custom workspace settings."""
+        settings = Settings(
+            max_workspaces=20,
+            server_sync_interval=60,
+        )
+        assert settings.max_workspaces == 20
+        # Servers are now fetched from API, not configured via env var
+        assert settings.server_sync_interval == 60
+
+class TestSettingsSentry:
+    """Tests for Sentry configuration."""
+
+    def test_sentry_defaults(self) -> None:
+        """Test Sentry default values."""
+        settings = Settings()
+        assert settings.sentry_dsn is None
+        assert settings.sentry_traces_sample_rate == 0.2
+        assert settings.sentry_profiles_sample_rate == 0.1
+
+
+class TestSettingsEnvPrefix:
+    """Tests for environment prefix."""
+
+    def test_env_prefix(self) -> None:
+        """Test COMPUTE_ prefix is used."""
+        assert Settings.model_config.get("env_prefix") == "COMPUTE_"

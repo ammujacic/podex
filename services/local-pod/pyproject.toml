@@ -1,0 +1,119 @@
+[project]
+name = "podex-pod"
+version = "0.1.0"
+description = "Podex Local Pod - Self-hosted compute agent for Podex"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Podex", email = "support@podex.dev" }]
+keywords = ["podex", "local-pod", "compute", "docker", "agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Build Tools",
+]
+
+dependencies = [
+    "click>=8.1.0",
+    "python-socketio[asyncio_client]>=5.10.0",
+    "docker>=7.0.0",
+    "psutil>=7.2.2",
+    "structlog>=24.1.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "httpx>=0.26.0",
+    "aiofiles>=23.2.0",
+    "sentry-sdk>=2.51.0",
+    "watchdog>=4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.14.14",
+    "mypy>=1.7.0",
+]
+
+[project.scripts]
+podex-pod = "podex_local_pod.main:cli"
+
+[project.urls]
+Homepage = "https://podex.dev"
+Documentation = "https://docs.podex.dev/local-pods"
+Repository = "https://github.com/podex/podex"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/podex_local_pod"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "docker.*",
+    "psutil",
+    "psutil.*",
+    "structlog.*",
+    "socketio.*",
+    "aiofiles",
+    "aiofiles.*",
+    "sentry_sdk",
+    "sentry_sdk.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["podex_local_pod.client"]
+disallow_untyped_decorators = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests that require Docker (deselect with '-m \"not integration\"')",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "@(abc\\.)?abstractmethod",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.0.0",
+]

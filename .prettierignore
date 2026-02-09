@@ -1,0 +1,15 @@
+node_modules
+.next
+dist
+coverage
+.turbo
+*.lock
+pnpm-lock.yaml
+package-lock.json
+__pycache__
+.venv
+*.pyc
+.mypy_cache
+.ruff_cache
+.pytest_cache
+cdk.out

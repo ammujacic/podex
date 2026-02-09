@@ -1,0 +1,161 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # =================================================================
+  # Docker Container Logs (via Docker socket)
+  # This automatically discovers and labels all containers
+  # =================================================================
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      # Extract container name
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+      # Extract log stream (stdout/stderr)
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: 'stream'
+      # Extract compose service name (service_name is Grafana Logs Drilldown default)
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'service_name'
+      # Extract compose project name
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: 'project'
+      # Extract Coolify service labels (Coolify uses dots in label names)
+      - source_labels: ['__meta_docker_container_label_coolify_serviceId']
+        target_label: 'coolify_service_id'
+      - source_labels: ['__meta_docker_container_label_coolify_applicationId']
+        target_label: 'coolify_application_id'
+      - source_labels: ['__meta_docker_container_label_coolify_name']
+        target_label: 'coolify_name'
+      # Use Coolify name as service_name if compose service name is empty
+      # This provides a fallback for Coolify-managed containers
+      - source_labels: ['__meta_docker_container_label_coolify_name']
+        regex: '(.+)'
+        target_label: 'service_name'
+      # Extract image name
+      - source_labels: ['__meta_docker_container_image']
+        target_label: 'image'
+      # =================================================================
+      # Map exposed ports to known services (fallback identification)
+      # Ports: api=3001, agent=3002, compute=3003, web=3000
+      # =================================================================
+      - source_labels: ['__meta_docker_port_private']
+        regex: '3000'
+        target_label: 'app'
+        replacement: 'web'
+      - source_labels: ['__meta_docker_port_private']
+        regex: '3001'
+        target_label: 'app'
+        replacement: 'api'
+      - source_labels: ['__meta_docker_port_private']
+        regex: '3002'
+        target_label: 'app'
+        replacement: 'agent'
+      - source_labels: ['__meta_docker_port_private']
+        regex: '3003'
+        target_label: 'app'
+        replacement: 'compute'
+    pipeline_stages:
+      # Parse JSON logs (Docker default format)
+      - json:
+          expressions:
+            log: log
+            timestamp: time
+      # Use the timestamp from the log
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+      # Output the actual log message
+      - output:
+          source: log
+      # =================================================================
+      # Parse structlog JSON fields and extract as labels
+      # This enables fast label-based filtering in Loki/Grafana
+      # =================================================================
+      - match:
+          # Only process lines that look like JSON (start with {)
+          selector: '{job="docker"}'
+          stages:
+            - json:
+                expressions:
+                  structlog_service: service_name
+                  structlog_level: level
+                  structlog_event: event
+                  structlog_request_id: request_id
+                  structlog_filename: filename
+            - labels:
+                # Log level for filtering (info, warning, error, etc.)
+                level: structlog_level
+                # Service name from structlog (podex-api, podex-agent, podex-compute)
+                app_service: structlog_service
+                # Source filename for debugging
+                source_file: structlog_filename
+
+  # =================================================================
+  # System Logs
+  # =================================================================
+  - job_name: syslog
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: syslog
+          host: platform
+          __path__: /var/log/syslog
+
+  # =================================================================
+  # Auth Logs (Security Monitoring)
+  # =================================================================
+  - job_name: authlog
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: authlog
+          host: platform
+          __path__: /var/log/auth.log
+    pipeline_stages:
+      # Extract failed login attempts
+      - match:
+          selector: '{job="authlog"}'
+          stages:
+            - regex:
+                expression: 'Failed password for (?P<user>\S+) from (?P<ip>\S+)'
+            - labels:
+                user:
+                ip:
+
+  # =================================================================
+  # Docker Daemon Logs
+  # =================================================================
+  - job_name: docker-daemon
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: docker-daemon
+          host: platform
+          __path__: /var/log/docker.log
+
+  # =================================================================
+  # Coolify Logs
+  # =================================================================
+  - job_name: coolify
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: coolify
+          host: platform
+          __path__: /data/coolify/logs/*.log

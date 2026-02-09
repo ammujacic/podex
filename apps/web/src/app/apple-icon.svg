@@ -1,0 +1,10 @@
+<svg width="180" height="180" viewBox="0 0 180 180" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="180" height="180" rx="34" fill="#07070a"/>
+  <!-- Large P -->
+  <path d="M39 28H96C115.882 28 132 44.118 132 64C132 83.882 115.882 100 96 100H67V140H39V28Z" fill="white"/>
+  <path d="M67 50H91C99.837 50 107 57.163 107 66C107 74.837 99.837 82 91 82H67V50Z" fill="#07070a"/>
+  <!-- {x} with curly braces -->
+  <path d="M84 108 Q78 108 78 116 Q78 123 74 123 Q78 123 78 130 Q78 138 84 138" stroke="white" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M94 111L114 131M114 111L94 131" stroke="white" stroke-width="7" stroke-linecap="round"/>
+  <path d="M124 108 Q130 108 130 116 Q130 123 134 123 Q130 123 130 130 Q130 138 124 138" stroke="white" stroke-width="5" stroke-linecap="round" fill="none"/>
+</svg>

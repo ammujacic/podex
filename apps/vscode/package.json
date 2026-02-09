@@ -1,0 +1,288 @@
+{
+  "name": "podex-vscode",
+  "displayName": "Podex",
+  "description": "AI-powered development workspaces with local and cloud compute",
+  "version": "0.1.0",
+  "publisher": "podex",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/podex/podex"
+  },
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=20.0.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "agents",
+    "development",
+    "workspace",
+    "podex",
+    "coding assistant"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "podex.login",
+        "title": "Login",
+        "category": "Podex"
+      },
+      {
+        "command": "podex.logout",
+        "title": "Logout",
+        "category": "Podex"
+      },
+      {
+        "command": "podex.status",
+        "title": "Show Status",
+        "category": "Podex"
+      },
+      {
+        "command": "podex.openWorkspace",
+        "title": "Open Workspace",
+        "category": "Podex"
+      },
+      {
+        "command": "podex.createSession",
+        "title": "Create Session",
+        "category": "Podex",
+        "icon": "$(add)"
+      },
+      {
+        "command": "podex.openSession",
+        "title": "Open Session",
+        "category": "Podex"
+      },
+      {
+        "command": "podex.refreshSessions",
+        "title": "Refresh Sessions",
+        "category": "Podex",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "podex.startLocalPod",
+        "title": "Start Local Pod",
+        "category": "Podex"
+      },
+      {
+        "command": "podex.stopLocalPod",
+        "title": "Stop Local Pod",
+        "category": "Podex"
+      },
+      {
+        "command": "podex.connectLocalPod",
+        "title": "Connect to Local Pod",
+        "category": "Podex"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "podex",
+          "title": "Podex",
+          "icon": "resources/icons/podex.svg"
+        }
+      ]
+    },
+    "views": {
+      "podex": [
+        {
+          "id": "podex.sessions",
+          "name": "Sessions",
+          "icon": "$(folder)",
+          "contextualTitle": "Podex Sessions"
+        },
+        {
+          "id": "podex.agents",
+          "name": "Agents",
+          "icon": "$(hubot)",
+          "contextualTitle": "Podex Agents"
+        },
+        {
+          "id": "podex.localPods",
+          "name": "Local Pods",
+          "icon": "$(server)",
+          "contextualTitle": "Local Pods"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "podex.sessions",
+        "contents": "No sessions yet.\n[Create Session](command:podex.createSession)\n[Sign In](command:podex.login)",
+        "when": "!podex.isAuthenticated"
+      },
+      {
+        "view": "podex.sessions",
+        "contents": "No sessions yet.\n[Create Session](command:podex.createSession)",
+        "when": "podex.isAuthenticated"
+      },
+      {
+        "view": "podex.localPods",
+        "contents": "No local pods detected.\n[Start Local Pod](command:podex.startLocalPod)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "podex.createSession",
+          "when": "view == podex.sessions && podex.isAuthenticated",
+          "group": "navigation"
+        },
+        {
+          "command": "podex.refreshSessions",
+          "when": "view == podex.sessions",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "podex.openSession",
+          "when": "viewItem =~ /^session-/",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "podex.login",
+          "when": "!podex.isAuthenticated"
+        },
+        {
+          "command": "podex.logout",
+          "when": "podex.isAuthenticated"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Podex",
+      "properties": {
+        "podex.apiUrl": {
+          "type": "string",
+          "default": "https://api.podex.dev",
+          "description": "Podex API server URL"
+        },
+        "podex.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically connect to the last session on startup"
+        },
+        "podex.localPod.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically start local pod when opening a workspace"
+        },
+        "podex.localPod.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to Python executable for local pod (leave empty for default)"
+        },
+        "podex.workspace.defaultLayout": {
+          "type": "string",
+          "enum": [
+            "grid",
+            "split",
+            "single"
+          ],
+          "default": "grid",
+          "description": "Default workspace panel layout"
+        }
+      }
+    },
+    "walkthroughs": [
+      {
+        "id": "podex.gettingStarted",
+        "title": "Getting Started with Podex",
+        "description": "Learn how to use Podex for AI-powered development",
+        "steps": [
+          {
+            "id": "signIn",
+            "title": "Sign In to Podex",
+            "description": "Sign in to your Podex account to access cloud workspaces.\n[Sign In](command:podex.login)",
+            "media": {
+              "markdown": "Sign in using your browser or device code."
+            },
+            "completionEvents": [
+              "onContext:podex.isAuthenticated"
+            ]
+          },
+          {
+            "id": "createSession",
+            "title": "Create Your First Session",
+            "description": "Create a new development session to start working with AI agents.\n[Create Session](command:podex.createSession)",
+            "media": {
+              "markdown": "Sessions contain your workspace, agents, and conversation history."
+            },
+            "completionEvents": [
+              "onCommand:podex.createSession"
+            ]
+          },
+          {
+            "id": "localPod",
+            "title": "Use Local Pod (Optional)",
+            "description": "Run Podex agents on your local machine for faster development.\n[Start Local Pod](command:podex.startLocalPod)",
+            "media": {
+              "markdown": "Local pods let you use your own compute resources."
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "dev": "concurrently \"pnpm dev:extension\" \"pnpm dev:webview\"",
+    "dev:extension": "node esbuild.config.mjs --watch",
+    "dev:webview": "vite build --watch",
+    "build": "pnpm build:extension && pnpm build:webview",
+    "build:extension": "node esbuild.config.mjs --production",
+    "build:webview": "vite build",
+    "vscode:prepublish": "pnpm build",
+    "package": "vsce package --no-dependencies",
+    "publish:vscode": "vsce publish --no-dependencies",
+    "publish:openvsx": "ovsx publish",
+    "publish:all": "pnpm publish:vscode && pnpm publish:openvsx",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src webview --ext ts,tsx",
+    "test": "vitest run",
+    "test:watch": "vitest watch",
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "node ./out/test/runTest.js",
+    "clean": "rm -rf dist out"
+  },
+  "dependencies": {
+    "@podex/api-client": "workspace:*",
+    "@podex/local-pod-discovery": "workspace:*",
+    "@podex/shared": "workspace:*",
+    "@podex/state": "workspace:*"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^20.11.0",
+    "@types/react": "^19.2.8",
+    "@types/react-dom": "^19.2.3",
+    "@types/vscode": "^1.85.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "@vitest/coverage-v8": "^2.1.9",
+    "@vscode/test-electron": "^2.3.8",
+    "@vscode/vsce": "^3.7.1",
+    "concurrently": "^8.2.2",
+    "esbuild": "^0.24.0",
+    "eslint": "^9.39.2",
+    "ovsx": "^0.8.3",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.53.0",
+    "vite": "^5.0.0",
+    "vitest": "^2.1.9"
+  }
+}

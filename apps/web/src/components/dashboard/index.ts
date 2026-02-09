@@ -1,0 +1,10 @@
+export { DashboardHeader } from './DashboardHeader';
+export { StatsGrid } from './StatsGrid';
+export { QuickActions, QuickStartTemplates, TemplateCard } from './QuickActions';
+export { ActivityFeed, UsageChart } from './ActivityFeed';
+export { VirtualSessionList } from './VirtualSessionList';
+export { TimeRangeSelector, getDaysFromValue, getLabelFromValue } from './TimeRangeSelector';
+export type { TimeRangeOption } from './TimeRangeSelector';
+export { ConfirmDialog, useConfirmDialog } from './ConfirmDialog';
+export { SessionMenu } from './SessionMenu';
+export { SessionCard, TemplateIcon, getStatus, formatDate } from './SessionCard';

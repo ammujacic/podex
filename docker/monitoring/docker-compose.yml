@@ -1,0 +1,224 @@
+version: '3.8'
+
+# Podex Monitoring Stack
+# Deploy via Coolify Docker Compose from GitHub
+#
+# All configs are baked into custom images at build time.
+# No manual configuration required after deployment.
+#
+# Services exposed:
+#   - Grafana (dashboards): port 9000 -> grafana.yourdomain.com
+#   - Uptime Kuma (status): port 9001 -> status.yourdomain.com
+#   - Prometheus (metrics): port 9090 (internal, or prometheus.yourdomain.com)
+#   - Loki (logs): port 3100 (internal only)
+
+services:
+  prometheus:
+    build:
+      context: ./docker/monitoring/prometheus
+      dockerfile: Dockerfile
+    container_name: prometheus
+    user: root
+    volumes:
+      - prometheus_data:/prometheus
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    networks:
+      - monitoring
+    labels:
+      - "coolify.managed=true"
+      - "coolify.service=prometheus"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  grafana:
+    build:
+      context: ./docker/monitoring/grafana
+      dockerfile: Dockerfile
+    container_name: grafana
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}
+      - GF_SERVER_ROOT_URL=${GRAFANA_URL:-http://localhost:3000}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      # SMTP for alerts (optional)
+      - GF_SMTP_ENABLED=${SMTP_ENABLED:-false}
+      - GF_SMTP_HOST=${SMTP_HOST:-}
+      - GF_SMTP_USER=${SMTP_USER:-}
+      - GF_SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - GF_SMTP_FROM_ADDRESS=${SMTP_FROM:-grafana@example.com}
+      # Plugins
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-piechart-panel
+    ports:
+      - "9000:3000"
+    restart: unless-stopped
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    networks:
+      - monitoring
+      - coolify
+    labels:
+      - "coolify.managed=true"
+      - "coolify.service=grafana"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  loki:
+    build:
+      context: ./docker/monitoring/loki
+      dockerfile: Dockerfile
+    container_name: loki
+    volumes:
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+    networks:
+      - monitoring
+    labels:
+      - "coolify.managed=true"
+      - "coolify.service=loki"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --output-document=- http://localhost:3100/ready | grep -q -w ready || exit 1"]
+      start_period: 20s
+      interval: 10s
+      timeout: 1s
+      retries: 12
+
+  promtail:
+    build:
+      context: ./docker/monitoring/promtail
+      dockerfile: Dockerfile
+    container_name: promtail
+    volumes:
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - monitoring
+    labels:
+      - "coolify.managed=true"
+      - "coolify.service=promtail"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9080/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  node-exporter:
+    image: prom/node-exporter:v1.10.2
+    container_name: node-exporter
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    ports:
+      - "9100:9100"
+    restart: unless-stopped
+    networks:
+      - monitoring
+    labels:
+      - "coolify.managed=true"
+      - "coolify.service=node-exporter"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9100/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.52.0
+    container_name: cadvisor
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      - /etc/localtime:/etc/localtime:ro
+    devices:
+      - /dev/kmsg
+    ports:
+      - "9080:8080"
+    restart: unless-stopped
+    networks:
+      - monitoring
+    labels:
+      - "coolify.managed=true"
+      - "coolify.service=cadvisor"
+    deploy:
+      mode: global
+      resources:
+        limits:
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:2.1.0-beta.3
+    container_name: uptime-kuma
+    volumes:
+      - uptime_kuma_v2_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "9001:3001"
+    restart: unless-stopped
+    networks:
+      - monitoring
+      - coolify  # Access app services via internal hostnames
+    labels:
+      - "coolify.managed=true"
+      - "coolify.service=uptime-kuma"
+    healthcheck:
+      test: ["CMD", "node", "/app/extra/healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+  uptime_kuma_v2_data:
+
+networks:
+  monitoring:
+    driver: bridge
+  # Connect to Coolify's network to reach app services
+  coolify:
+    external: true

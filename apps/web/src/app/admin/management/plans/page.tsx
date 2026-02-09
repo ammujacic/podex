@@ -1,0 +1,745 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { Plus, Edit2, Check, X, Users } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { useAdminStore, type AdminPlan } from '@/stores/admin';
+import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+
+function formatCurrency(cents: number): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+  }).format(cents / 100);
+}
+
+interface PlanCardProps {
+  plan: AdminPlan;
+  onEdit: (plan: AdminPlan) => void;
+  onToggleActive: (planId: string, isActive: boolean) => void;
+}
+
+function PlanCard({ plan, onEdit, onToggleActive }: PlanCardProps) {
+  return (
+    <div
+      className={cn(
+        'bg-surface rounded-xl border p-6',
+        plan.is_active ? 'border-border-subtle' : 'border-red-500/30 opacity-70'
+      )}
+    >
+      <div className="flex items-start justify-between mb-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <h3 className="text-lg font-semibold text-text-primary">{plan.name}</h3>
+            {plan.is_popular && (
+              <span className="px-2 py-0.5 bg-accent-primary/20 text-accent-primary text-xs rounded-full">
+                Popular
+              </span>
+            )}
+          </div>
+          <p className="text-text-muted text-sm mt-1">{plan.slug}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => onEdit(plan)}
+            className="p-2 hover:bg-elevated rounded-lg transition-colors"
+          >
+            <Edit2 className="h-4 w-4 text-text-muted" />
+          </button>
+          <button
+            onClick={() => onToggleActive(plan.id, !plan.is_active)}
+            className={cn(
+              'p-2 rounded-lg transition-colors',
+              plan.is_active
+                ? 'hover:bg-red-500/10 text-red-500'
+                : 'hover:bg-green-500/10 text-green-500'
+            )}
+          >
+            {plan.is_active ? <X className="h-4 w-4" /> : <Check className="h-4 w-4" />}
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        {/* Pricing */}
+        <div>
+          <div className="flex items-baseline gap-1">
+            <span className="text-3xl font-bold text-text-primary">
+              {formatCurrency(plan.price_monthly_cents)}
+            </span>
+            <span className="text-text-muted">/month</span>
+          </div>
+          <p className="text-text-muted text-sm">{formatCurrency(plan.price_yearly_cents)}/year</p>
+        </div>
+
+        {/* Subscribers */}
+        <div className="flex items-center gap-2 text-sm">
+          <Users className="h-4 w-4 text-text-muted" />
+          <span className="text-text-secondary">{plan.subscriber_count} subscribers</span>
+        </div>
+
+        {/* Included Resources */}
+        <div className="space-y-2 text-sm">
+          <div className="flex justify-between">
+            <span className="text-text-muted">Tokens</span>
+            <span className="text-text-secondary">
+              {(plan.tokens_included / 1000000).toFixed(1)}M
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-muted">Compute Credits</span>
+            <span className="text-text-secondary">
+              ${(plan.compute_credits_cents_included / 100).toFixed(0)}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-muted">Storage</span>
+            <span className="text-text-secondary">{plan.storage_gb_included} GB</span>
+          </div>
+        </div>
+
+        {/* Limits */}
+        <div className="space-y-2 text-sm border-t border-border-subtle pt-4">
+          <div className="flex justify-between">
+            <span className="text-text-muted">Max Agents</span>
+            <span className="text-text-secondary">{plan.max_agents}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-muted">Max Sessions</span>
+            <span className="text-text-secondary">{plan.max_sessions}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-muted">Live Collaborators</span>
+            <span className="text-text-secondary">{plan.max_team_members}</span>
+          </div>
+        </div>
+
+        {/* Margins */}
+        <div className="space-y-2 text-sm border-t border-border-subtle pt-4">
+          <div className="flex justify-between">
+            <span className="text-text-muted">LLM Margin</span>
+            <span className="text-text-secondary">{plan.llm_margin_percent}%</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-muted">Compute Margin</span>
+            <span className="text-text-secondary">{plan.compute_margin_percent}%</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface EditPlanModalProps {
+  plan: AdminPlan | null;
+  onClose: () => void;
+  onSave: (data: Partial<AdminPlan>) => Promise<void>;
+}
+
+function EditPlanModal({ plan, onClose, onSave }: EditPlanModalProps) {
+  const [formData, setFormData] = useState({
+    name: plan?.name || '',
+    slug: plan?.slug || '',
+    description: plan?.description || '',
+    price_monthly_cents: plan?.price_monthly_cents || 0,
+    price_yearly_cents: plan?.price_yearly_cents || 0,
+    tokens_included: plan?.tokens_included || 0,
+    compute_credits_cents_included: plan?.compute_credits_cents_included || 0,
+    storage_gb_included: plan?.storage_gb_included || 0,
+    max_agents: plan?.max_agents || 1,
+    max_sessions: plan?.max_sessions || 1,
+    max_team_members: plan?.max_team_members || 1,
+    llm_margin_percent: plan?.llm_margin_percent || 0,
+    compute_margin_percent: plan?.compute_margin_percent || 0,
+    is_popular: plan?.is_popular || false,
+    stripe_product_id: plan?.stripe_product_id || '',
+    stripe_price_id_monthly: plan?.stripe_price_id_monthly || '',
+    stripe_price_id_yearly: plan?.stripe_price_id_yearly || '',
+    // Display/UI settings
+    color: plan?.color || '',
+    icon: plan?.icon || '',
+    cta_text: plan?.cta_text || '',
+    highlight_features: plan?.highlight_features?.join(', ') || '',
+    // Session/workspace configuration
+    session_timeout_options:
+      plan?.session_timeout_options?.map((v) => (v === null ? 'null' : String(v))).join(', ') || '',
+    max_thinking_tokens: plan?.max_thinking_tokens || '',
+    workspace_cpu_limit: plan?.workspace_cpu_limit || '',
+    workspace_memory_limit: plan?.workspace_memory_limit || '',
+    workspace_disk_limit: plan?.workspace_disk_limit || '',
+    max_session_duration_minutes: plan?.max_session_duration_minutes || '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      // Transform form data to API format
+      const apiData = {
+        ...formData,
+        // Convert string fields to proper types
+        color: formData.color || null,
+        icon: formData.icon || null,
+        cta_text: formData.cta_text || null,
+        highlight_features: formData.highlight_features
+          ? formData.highlight_features
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : null,
+        session_timeout_options: formData.session_timeout_options
+          ? formData.session_timeout_options
+              .split(',')
+              .map((s) => {
+                const trimmed = s.trim();
+                return trimmed === 'null' ? null : parseInt(trimmed, 10);
+              })
+              .filter((v) => v === null || !isNaN(v as number))
+          : null,
+        max_thinking_tokens: formData.max_thinking_tokens
+          ? Number(formData.max_thinking_tokens)
+          : null,
+        workspace_cpu_limit: formData.workspace_cpu_limit
+          ? Number(formData.workspace_cpu_limit)
+          : null,
+        workspace_memory_limit: formData.workspace_memory_limit
+          ? Number(formData.workspace_memory_limit)
+          : null,
+        workspace_disk_limit: formData.workspace_disk_limit
+          ? Number(formData.workspace_disk_limit)
+          : null,
+        max_session_duration_minutes: formData.max_session_duration_minutes
+          ? Number(formData.max_session_duration_minutes)
+          : null,
+      };
+      await onSave(apiData);
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-surface rounded-xl border border-border-subtle p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <h2 className="text-xl font-semibold text-text-primary mb-6">
+          {plan ? 'Edit Plan' : 'Create Plan'}
+        </h2>
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Basic Info */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-text-muted mb-1">Name</label>
+              <input
+                type="text"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-text-muted mb-1">Slug</label>
+              <input
+                type="text"
+                value={formData.slug}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    slug: e.target.value.toLowerCase().replace(/\s+/g, '-'),
+                  })
+                }
+                placeholder={formData.name.toLowerCase().replace(/\s+/g, '-') || 'plan-slug'}
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                required={!plan}
+                disabled={!!plan}
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm text-text-muted mb-1">Description</label>
+            <input
+              type="text"
+              value={formData.description}
+              onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+              className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+            />
+          </div>
+
+          {/* Pricing */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-text-muted mb-1">Monthly Price (cents)</label>
+              <input
+                type="number"
+                value={formData.price_monthly_cents}
+                onChange={(e) =>
+                  setFormData({ ...formData, price_monthly_cents: parseInt(e.target.value) || 0 })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                min={0}
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-text-muted mb-1">Yearly Price (cents)</label>
+              <input
+                type="number"
+                value={formData.price_yearly_cents}
+                onChange={(e) =>
+                  setFormData({ ...formData, price_yearly_cents: parseInt(e.target.value) || 0 })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                min={0}
+              />
+            </div>
+          </div>
+
+          {/* Stripe Integration */}
+          <div className="space-y-4 pt-4 border-t border-border-subtle">
+            <h3 className="text-sm font-medium text-text-secondary">Stripe Integration</h3>
+            <div>
+              <label className="block text-sm text-text-muted mb-1">Stripe Product ID</label>
+              <input
+                type="text"
+                value={formData.stripe_product_id}
+                onChange={(e) => setFormData({ ...formData, stripe_product_id: e.target.value })}
+                placeholder="prod_..."
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-text-muted mb-1">Monthly Price ID</label>
+                <input
+                  type="text"
+                  value={formData.stripe_price_id_monthly}
+                  onChange={(e) =>
+                    setFormData({ ...formData, stripe_price_id_monthly: e.target.value })
+                  }
+                  placeholder="price_..."
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-muted mb-1">Yearly Price ID</label>
+                <input
+                  type="text"
+                  value={formData.stripe_price_id_yearly}
+                  onChange={(e) =>
+                    setFormData({ ...formData, stripe_price_id_yearly: e.target.value })
+                  }
+                  placeholder="price_..."
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Included Resources */}
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm text-text-muted mb-1">Tokens Included</label>
+              <input
+                type="number"
+                value={formData.tokens_included}
+                onChange={(e) =>
+                  setFormData({ ...formData, tokens_included: parseInt(e.target.value) || 0 })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                min={0}
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-text-muted mb-1">Compute Credits (cents)</label>
+              <input
+                type="number"
+                value={formData.compute_credits_cents_included}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    compute_credits_cents_included: parseInt(e.target.value) || 0,
+                  })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                min={0}
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-text-muted mb-1">Storage (GB)</label>
+              <input
+                type="number"
+                value={formData.storage_gb_included}
+                onChange={(e) =>
+                  setFormData({ ...formData, storage_gb_included: parseInt(e.target.value) || 0 })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                min={0}
+              />
+            </div>
+          </div>
+
+          {/* Limits */}
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm text-text-muted mb-1">Max Agents</label>
+              <input
+                type="number"
+                value={formData.max_agents}
+                onChange={(e) =>
+                  setFormData({ ...formData, max_agents: parseInt(e.target.value) || 1 })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                min={1}
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-text-muted mb-1">Max Sessions</label>
+              <input
+                type="number"
+                value={formData.max_sessions}
+                onChange={(e) =>
+                  setFormData({ ...formData, max_sessions: parseInt(e.target.value) || 1 })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                min={1}
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-text-muted mb-1">Live Collaborators</label>
+              <input
+                type="number"
+                value={formData.max_team_members}
+                onChange={(e) =>
+                  setFormData({ ...formData, max_team_members: parseInt(e.target.value) || 1 })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                min={1}
+              />
+            </div>
+          </div>
+
+          {/* Margins */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-text-muted mb-1">LLM Margin (%)</label>
+              <input
+                type="number"
+                value={formData.llm_margin_percent}
+                onChange={(e) =>
+                  setFormData({ ...formData, llm_margin_percent: parseInt(e.target.value) || 0 })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                min={0}
+                max={100}
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-text-muted mb-1">Compute Margin (%)</label>
+              <input
+                type="number"
+                value={formData.compute_margin_percent}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    compute_margin_percent: parseInt(e.target.value) || 0,
+                  })
+                }
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                min={0}
+                max={100}
+              />
+            </div>
+          </div>
+
+          {/* Flags */}
+          <div className="flex gap-6">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={formData.is_popular}
+                onChange={(e) => setFormData({ ...formData, is_popular: e.target.checked })}
+                className="rounded border-border-subtle"
+              />
+              <span className="text-sm text-text-secondary">Popular</span>
+            </label>
+          </div>
+
+          {/* Display/UI Settings */}
+          <div className="space-y-4 pt-4 border-t border-border-subtle">
+            <h3 className="text-sm font-medium text-text-secondary">Display Settings</h3>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="block text-sm text-text-muted mb-1">Color (hex)</label>
+                <input
+                  type="text"
+                  value={formData.color}
+                  onChange={(e) => setFormData({ ...formData, color: e.target.value })}
+                  placeholder="#22c55e"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-muted mb-1">Icon</label>
+                <input
+                  type="text"
+                  value={formData.icon}
+                  onChange={(e) => setFormData({ ...formData, icon: e.target.value })}
+                  placeholder="Zap, Crown, etc."
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-muted mb-1">CTA Text</label>
+                <input
+                  type="text"
+                  value={formData.cta_text}
+                  onChange={(e) => setFormData({ ...formData, cta_text: e.target.value })}
+                  placeholder="Get Started"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm text-text-muted mb-1">
+                Highlight Features (comma-separated)
+              </label>
+              <input
+                type="text"
+                value={formData.highlight_features}
+                onChange={(e) => setFormData({ ...formData, highlight_features: e.target.value })}
+                placeholder="Feature 1, Feature 2, Feature 3"
+                className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+              />
+            </div>
+          </div>
+
+          {/* Session/Workspace Configuration */}
+          <div className="space-y-4 pt-4 border-t border-border-subtle">
+            <h3 className="text-sm font-medium text-text-secondary">
+              Session & Workspace Configuration
+            </h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Session Timeout Options (comma-separated, use null for unlimited)
+                </label>
+                <input
+                  type="text"
+                  value={formData.session_timeout_options}
+                  onChange={(e) =>
+                    setFormData({ ...formData, session_timeout_options: e.target.value })
+                  }
+                  placeholder="15, 30, 60, 120, null"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary font-mono text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Max Session Duration (minutes)
+                </label>
+                <input
+                  type="number"
+                  value={formData.max_session_duration_minutes}
+                  onChange={(e) =>
+                    setFormData({ ...formData, max_session_duration_minutes: e.target.value })
+                  }
+                  placeholder="Leave empty for unlimited"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                  min={0}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-text-muted mb-1">Max Thinking Tokens</label>
+                <input
+                  type="number"
+                  value={formData.max_thinking_tokens}
+                  onChange={(e) =>
+                    setFormData({ ...formData, max_thinking_tokens: e.target.value })
+                  }
+                  placeholder="Leave empty for default"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                  min={0}
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Workspace CPU Limit (millicores)
+                </label>
+                <input
+                  type="number"
+                  value={formData.workspace_cpu_limit}
+                  onChange={(e) =>
+                    setFormData({ ...formData, workspace_cpu_limit: e.target.value })
+                  }
+                  placeholder="e.g., 2000 for 2 cores"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                  min={0}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Workspace Memory Limit (MB)
+                </label>
+                <input
+                  type="number"
+                  value={formData.workspace_memory_limit}
+                  onChange={(e) =>
+                    setFormData({ ...formData, workspace_memory_limit: e.target.value })
+                  }
+                  placeholder="e.g., 4096 for 4GB"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                  min={0}
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-text-muted mb-1">
+                  Workspace Disk Limit (GB)
+                </label>
+                <input
+                  type="number"
+                  value={formData.workspace_disk_limit}
+                  onChange={(e) =>
+                    setFormData({ ...formData, workspace_disk_limit: e.target.value })
+                  }
+                  placeholder="e.g., 20"
+                  className="w-full px-3 py-2 rounded-lg bg-elevated border border-border-subtle text-text-primary"
+                  min={0}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex justify-end gap-3 pt-4 border-t border-border-subtle">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-lg bg-elevated text-text-secondary hover:text-text-primary transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="px-4 py-2 rounded-lg bg-accent-primary text-white hover:bg-accent-primary/90 transition-colors disabled:opacity-50"
+            >
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+export default function PlansManagement() {
+  useDocumentTitle('Subscription Plans');
+  const { plans, plansLoading, fetchPlans, updatePlan, createPlan, error } = useAdminStore();
+  const [editingPlan, setEditingPlan] = useState<AdminPlan | null>(null);
+  const [showEditModal, setShowEditModal] = useState(false);
+
+  useEffect(() => {
+    fetchPlans();
+  }, [fetchPlans]);
+
+  const handleToggleActive = async (planId: string, isActive: boolean) => {
+    await updatePlan(planId, { is_active: isActive });
+  };
+
+  const handleSavePlan = async (data: Partial<AdminPlan> & { slug?: string }) => {
+    if (editingPlan) {
+      await updatePlan(editingPlan.id, data);
+    } else {
+      // Create new plan with required defaults
+      await createPlan({
+        ...data,
+        slug: data.slug || data.name?.toLowerCase().replace(/\s+/g, '-') || 'new-plan',
+        currency: 'USD',
+        overage_token_rate_cents: null,
+        overage_compute_rate_cents: null,
+        overage_storage_rate_cents: null,
+        overage_allowed: false,
+        features: {},
+        is_active: true,
+        is_enterprise: false,
+        sort_order: plans.length,
+      } as Parameters<typeof createPlan>[0]);
+    }
+  };
+
+  return (
+    <div className="p-8">
+      <div className="flex items-center justify-between mb-8">
+        <div>
+          <h1 className="text-2xl font-semibold text-text-primary">Subscription Plans</h1>
+          <p className="text-text-muted mt-1">Manage pricing tiers and features</p>
+        </div>
+        <button
+          onClick={() => {
+            setEditingPlan(null);
+            setShowEditModal(true);
+          }}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-primary text-white hover:bg-accent-primary/90 transition-colors"
+        >
+          <Plus className="h-4 w-4" />
+          Add Plan
+        </button>
+      </div>
+
+      {error && (
+        <div className="bg-red-500/10 text-red-500 p-4 rounded-lg mb-6">Error: {error}</div>
+      )}
+
+      {plansLoading ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {[...Array(3)].map((_, i) => (
+            <div
+              key={i}
+              className="bg-surface rounded-xl border border-border-subtle p-6 animate-pulse"
+            >
+              <div className="h-6 bg-elevated rounded w-24 mb-4" />
+              <div className="h-10 bg-elevated rounded w-32 mb-4" />
+              <div className="space-y-2">
+                <div className="h-4 bg-elevated rounded w-full" />
+                <div className="h-4 bg-elevated rounded w-3/4" />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {plans
+            .sort((a, b) => a.sort_order - b.sort_order)
+            .map((plan) => (
+              <PlanCard
+                key={plan.id}
+                plan={plan}
+                onEdit={(p) => {
+                  setEditingPlan(p);
+                  setShowEditModal(true);
+                }}
+                onToggleActive={handleToggleActive}
+              />
+            ))}
+        </div>
+      )}
+
+      {showEditModal && (
+        <EditPlanModal
+          plan={editingPlan}
+          onClose={() => {
+            setShowEditModal(false);
+            setEditingPlan(null);
+          }}
+          onSave={handleSavePlan}
+        />
+      )}
+    </div>
+  );
+}

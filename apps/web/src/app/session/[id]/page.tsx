@@ -1,0 +1,848 @@
+'use client';
+
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Loader2,
+  RefreshCw,
+  AlertCircle,
+  Zap,
+  Server,
+  GitBranch,
+  Check,
+  ArrowLeft,
+} from 'lucide-react';
+import { Button } from '@podex/ui';
+import { WorkspaceLayout } from '@/components/workspace/WorkspaceLayout';
+import { AgentGrid } from '@/components/workspace/AgentGrid';
+import { CommandPalette } from '@/components/workspace/CommandPalette';
+import {
+  getSession,
+  getWorkspaceStatus,
+  getGitStatus,
+  listAgents,
+  listConversations,
+  getConversation,
+  getSessionLayout,
+  type Session,
+  type AgentResponse,
+  type ConversationSummary,
+  type SessionLayoutState,
+} from '@/lib/api';
+import type { Agent, ConversationSession, AgentMessage } from '@/stores/session';
+import { getLanguageFromPath } from '@/stores/sessionTypes';
+import { useUser, useAuthStore } from '@/stores/auth';
+import { useSessionStore } from '@/stores/session';
+import { useEditorStore } from '@/stores/editor';
+import {
+  useOnboardingTour,
+  WORKSPACE_TOUR_STEPS,
+  MOBILE_WORKSPACE_TOUR_STEPS,
+} from '@/components/ui/OnboardingTour';
+import { useSessionTitle } from '@/hooks/useDocumentTitle';
+import { useIsMobile } from '@/hooks/useIsMobile';
+
+// Agent colors for mapping
+const agentColors = ['agent-1', 'agent-2', 'agent-3', 'agent-4', 'agent-5', 'agent-6'];
+
+// Loading messages for each stage
+type LoadingMessage = { progress: number; message: string; detail: string };
+const loadingMessages: LoadingMessage[] = [
+  { progress: 0, message: 'Connecting to pod...', detail: 'Establishing secure connection' },
+  { progress: 20, message: 'Starting pod...', detail: 'Initializing your environment' },
+  {
+    progress: 40,
+    message: 'Loading workspace...',
+    detail: 'Syncing your files from cloud storage',
+  },
+  { progress: 60, message: 'Installing packages...', detail: 'Setting up project dependencies' },
+  { progress: 80, message: 'Syncing configuration...', detail: 'Applying your preferences' },
+  { progress: 95, message: 'Almost ready...', detail: 'Finalizing workspace setup' },
+];
+
+const defaultLoadingMessage: LoadingMessage = loadingMessages[0] ?? {
+  progress: 0,
+  message: 'Loading...',
+  detail: 'Please wait',
+};
+
+export default function SessionPage() {
+  const params = useParams();
+  const router = useRouter();
+  const user = useUser();
+  const isInitialized = useAuthStore((s) => s.isInitialized);
+  const sessionId = params.id as string;
+  // Use getState() for initial check to avoid dependency on sessions object
+  // This prevents the effect from re-running when any session changes
+  const createSession = useSessionStore((s) => s.createSession);
+  const setCurrentSession = useSessionStore((s) => s.setCurrentSession);
+  const setWorkspaceStatusChecking = useSessionStore((s) => s.setWorkspaceStatusChecking);
+  const resetEditorLayout = useEditorStore((s) => s.resetLayout);
+
+  // Onboarding tour
+  const { startTour, hasCompleted } = useOnboardingTour();
+  const hasTriggeredTourRef = useRef(false);
+  const isMobile = useIsMobile();
+  const workspaceStatus = useSessionStore((s) => s.sessions[sessionId]?.workspaceStatus);
+
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Set document title with session name and notifications
+  useSessionTitle(session?.name, sessionId);
+  const [error, setError] = useState<string | null>(null);
+  const [podStatus, setPodStatus] = useState<'starting' | 'running' | 'stopped' | 'error'>(
+    'starting'
+  );
+  const [loadingProgress, setLoadingProgress] = useState(0);
+  const [currentLoadingMessage, setCurrentLoadingMessage] =
+    useState<LoadingMessage>(defaultLoadingMessage);
+  const [restarting, setRestarting] = useState(false);
+
+  // Track startup simulation interval for cleanup
+  const startupIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const startupTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const restartTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cleanup function for startup simulation
+  const cleanupStartupSimulation = useCallback(() => {
+    if (startupIntervalRef.current) {
+      clearInterval(startupIntervalRef.current);
+      startupIntervalRef.current = null;
+    }
+    if (startupTimeoutRef.current) {
+      clearTimeout(startupTimeoutRef.current);
+      startupTimeoutRef.current = null;
+    }
+  }, []);
+
+  // Reset editor layout when switching sessions so that open tabs
+  // are scoped per session instead of bleeding across sessions.
+  useEffect(() => {
+    resetEditorLayout();
+  }, [resetEditorLayout, sessionId]);
+
+  // Preserve selected session: set current session as soon as we're on a session page.
+  // This ensures the sidebar/dashboard shows the correct session as selected, and
+  // survives persist rehydration (which can overwrite state after createSession).
+  useEffect(() => {
+    if (sessionId) {
+      setCurrentSession(sessionId);
+    }
+  }, [sessionId, setCurrentSession]);
+
+  // Simulate startup progress
+  const simulateStartup = useCallback(() => {
+    // Clean up any existing simulation first
+    cleanupStartupSimulation();
+
+    let currentIndex = 0;
+    startupIntervalRef.current = setInterval(() => {
+      if (currentIndex < loadingMessages.length - 1) {
+        currentIndex++;
+        const message = loadingMessages[currentIndex];
+        if (message) {
+          setCurrentLoadingMessage(message);
+          setLoadingProgress(message.progress);
+        }
+      } else {
+        if (startupIntervalRef.current) {
+          clearInterval(startupIntervalRef.current);
+          startupIntervalRef.current = null;
+        }
+        // After simulation, mark as running
+        startupTimeoutRef.current = setTimeout(() => {
+          setPodStatus('running');
+          setLoadingProgress(100);
+        }, 1000);
+      }
+    }, 1500);
+  }, [cleanupStartupSimulation]);
+
+  useEffect(() => {
+    // Wait for auth to initialize before checking user
+    if (!isInitialized) {
+      return;
+    }
+
+    if (!user) {
+      router.push('/auth/login');
+      return;
+    }
+
+    let isCancelled = false;
+
+    async function loadSession() {
+      try {
+        // Fetch session, agents, conversation sessions, and layout from backend in parallel
+        // BACKEND IS SOURCE OF TRUTH - fetch everything including UI state
+        // LayoutSyncProvider will also load layout for ongoing sync, but we load it here
+        // to ensure initial state is correct immediately
+        const [data, agentsData, conversationsData, layoutData] = await Promise.all([
+          getSession(sessionId),
+          listAgents(sessionId),
+          listConversations(sessionId),
+          getSessionLayout(sessionId).catch((err) => {
+            // Layout fetch is best-effort - fall back to defaults if it fails
+            console.warn('Failed to fetch session layout, using defaults:', err);
+            return null;
+          }),
+        ]);
+
+        // Check if request was cancelled
+        if (isCancelled) return;
+
+        setSession(data);
+
+        if (isCancelled) return;
+
+        // Map agents from API response (conversation sessions are loaded separately)
+        const agents: Agent[] = agentsData.map((agentResponse: AgentResponse, index: number) => ({
+          id: agentResponse.id,
+          name: agentResponse.name,
+          role: agentResponse.role as Agent['role'],
+          model: agentResponse.model,
+          modelDisplayName: agentResponse.model_display_name ?? undefined,
+          status: agentResponse.status as Agent['status'],
+          color: agentColors[index % agentColors.length] ?? 'agent-1',
+          conversationSessionId: agentResponse.conversation_session_id ?? null,
+          mode: (agentResponse.mode as Agent['mode']) || 'ask',
+        }));
+
+        if (isCancelled) return;
+
+        // Map conversations from API response and fetch messages for conversations that have them
+        const conversationsWithMessages = await Promise.all(
+          conversationsData.map(async (conv: ConversationSummary) => {
+            // Only fetch messages if the conversation has messages
+            if (conv.message_count > 0) {
+              try {
+                const convWithMessages = await getConversation(sessionId, conv.id);
+                if (isCancelled) return null;
+
+                // Map API messages to frontend AgentMessage format and deduplicate by ID
+                const messageMap = new Map<string, AgentMessage>();
+                for (const msg of convWithMessages.messages) {
+                  const agentMsg: AgentMessage = {
+                    id: msg.id,
+                    role: msg.role as 'user' | 'assistant',
+                    content: msg.content,
+                    thinking: msg.thinking ?? undefined,
+                    timestamp: new Date(msg.created_at),
+                    toolCalls: msg.tool_calls as unknown as AgentMessage['toolCalls'],
+                    toolResults: msg.tool_results as unknown as AgentMessage['toolResults'],
+                    stopReason: msg.stop_reason ?? undefined,
+                    usage: msg.usage as unknown as AgentMessage['usage'],
+                    model: msg.model ?? undefined,
+                  };
+                  // Deduplicate by ID - keep the first occurrence
+                  if (!messageMap.has(msg.id)) {
+                    messageMap.set(msg.id, agentMsg);
+                  }
+                }
+                // Convert back to array and sort by timestamp
+                const messages = Array.from(messageMap.values()).sort(
+                  (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
+                );
+
+                return {
+                  id: conv.id,
+                  name: conv.name,
+                  messages,
+                  attachedAgentIds: conv.attached_agent_ids || [],
+                  messageCount: conv.message_count,
+                  lastMessageAt: conv.last_message_at,
+                  createdAt: conv.created_at,
+                  updatedAt: conv.updated_at,
+                };
+              } catch (error) {
+                console.error(`Failed to load messages for conversation ${conv.id}:`, error);
+                // Fall back to conversation without messages
+                return {
+                  id: conv.id,
+                  name: conv.name,
+                  messages: [],
+                  attachedAgentIds: conv.attached_agent_ids || [],
+                  messageCount: conv.message_count,
+                  lastMessageAt: conv.last_message_at,
+                  createdAt: conv.created_at,
+                  updatedAt: conv.updated_at,
+                };
+              }
+            } else {
+              // No messages, return empty conversation
+              return {
+                id: conv.id,
+                name: conv.name,
+                messages: [],
+                attachedAgentIds: conv.attached_agent_ids || [],
+                messageCount: conv.message_count,
+                lastMessageAt: conv.last_message_at,
+                createdAt: conv.created_at,
+                updatedAt: conv.updated_at,
+              };
+            }
+          })
+        );
+
+        // Filter out any null results (from cancelled requests)
+        const conversations: ConversationSession[] = conversationsWithMessages.filter(
+          (c): c is ConversationSession => c !== null
+        );
+
+        // Ensure conversations and agents are in sync
+        // Backend is source of truth, but we ensure bidirectional consistency:
+        // If agent has conversationSessionId pointing to a conversation, ensure that conversation
+        // has the agent in its attachedAgentIds list (backend should already do this, but we verify)
+        const conversationsSynced = conversations.map((conv) => {
+          // Find agents that have this conversation attached (by conversationSessionId)
+          const attachedAgents = agents.filter((a) => a.conversationSessionId === conv.id);
+          const attachedAgentIdsFromConv = conv.attachedAgentIds || [];
+
+          // Merge any agents that have this conversation but aren't in the list
+          const mergedAgentIds = [
+            ...new Set([...attachedAgentIdsFromConv, ...attachedAgents.map((a) => a.id)]),
+          ];
+
+          // If there's a difference, update the conversation
+          if (
+            mergedAgentIds.length !== attachedAgentIdsFromConv.length ||
+            !mergedAgentIds.every((id) => attachedAgentIdsFromConv.includes(id))
+          ) {
+            return { ...conv, attachedAgentIds: mergedAgentIds };
+          }
+
+          // Otherwise trust backend data
+          return conv;
+        });
+
+        // Sync session to Zustand store
+        // ============================================================================
+        // BACKEND IS ALWAYS THE SOURCE OF TRUTH - INCLUDING UI STATE
+        // ============================================================================
+        // This ensures consistent syncing across multiple windows/tabs/devices:
+        // 1. Always fetch fresh data from backend (agents, conversations, messages, layout)
+        // 2. Replace ALL data completely - never merge with localStorage
+        // 3. Backend layout includes: viewMode, agent positions, file previews, editor state
+        // 4. LayoutSyncProvider handles ongoing sync after initial load
+        // 5. WebSocket events keep sessions in sync in real-time across windows
+        // 6. localStorage is only used as a cache, backend always wins
+        // ============================================================================
+        const existingSession = useSessionStore.getState().sessions[sessionId];
+
+        // Use backend layout as source of truth, fallback to defaults if not available
+        const layout: SessionLayoutState = layoutData || {
+          view_mode: 'grid',
+          active_agent_id: null,
+          agent_layouts: {},
+          file_preview_layouts: {},
+          sidebar_open: true,
+          sidebar_width: 280,
+          editor_grid_card_id: null,
+          editor_grid_span: null,
+          editor_freeform_position: null,
+        };
+
+        // Map backend agent layouts to frontend agent format
+        // Backend data (id, name, role, model, status, conversationSessionId) always wins
+        const agentsWithBackendLayout: Agent[] = agents.map((apiAgent, index) => {
+          const agentLayout = layout.agent_layouts[apiAgent.id];
+          const localAgent = existingSession?.agents.find((a) => a.id === apiAgent.id);
+          return {
+            ...apiAgent, // Backend data is source of truth
+            // Preserve color (UI preference, not stored in backend)
+            color: localAgent?.color ?? agentColors[index % agentColors.length] ?? 'agent-1',
+            // Use backend layout for positions and grid spans
+            position: agentLayout?.position
+              ? {
+                  x: agentLayout.position.x ?? 0,
+                  y: agentLayout.position.y ?? 0,
+                  width: agentLayout.position.width ?? 400,
+                  height: agentLayout.position.height ?? 300,
+                  zIndex: agentLayout.position.z_index ?? 1,
+                }
+              : undefined,
+            gridSpan: agentLayout?.grid_span
+              ? {
+                  colSpan: agentLayout.grid_span.col_span ?? 1,
+                  rowSpan: agentLayout.grid_span.row_span ?? 1,
+                  colStart: agentLayout.grid_span.col_start,
+                }
+              : undefined,
+            mode: apiAgent.mode || 'ask',
+            // Backend conversationSessionId is always used (source of truth)
+            conversationSessionId: apiAgent.conversationSessionId,
+          };
+        });
+
+        // Map backend file preview layouts to frontend format
+        // Backend stores layout metadata (position, gridSpan, docked, pinned) but not content
+        // Content is loaded separately when preview is opened
+        const filePreviewsFromBackend = Object.values(layout.file_preview_layouts || {}).map(
+          (previewLayout) => {
+            const existingPreview = existingSession?.filePreviews.find(
+              (p) => p.id === previewLayout.preview_id || p.path === previewLayout.path
+            );
+            return {
+              id: previewLayout.preview_id,
+              path: previewLayout.path,
+              content: existingPreview?.content ?? '', // Content loaded separately when preview is opened
+              language: existingPreview?.language ?? getLanguageFromPath(previewLayout.path),
+              pinned: previewLayout.pinned ?? false,
+              docked: previewLayout.docked ?? false,
+              position: previewLayout.position
+                ? {
+                    x: previewLayout.position.x ?? 100,
+                    y: previewLayout.position.y ?? 100,
+                    width: previewLayout.position.width ?? 600,
+                    height: previewLayout.position.height ?? 500,
+                    zIndex: previewLayout.position.z_index ?? 1,
+                  }
+                : { x: 100, y: 100 },
+              gridSpan: previewLayout.grid_span
+                ? {
+                    colSpan: previewLayout.grid_span.col_span ?? 1,
+                    rowSpan: previewLayout.grid_span.row_span ?? 1,
+                    colStart: previewLayout.grid_span.col_start,
+                  }
+                : undefined,
+            };
+          }
+        );
+
+        // Always replace session with backend data (including UI state from backend)
+        createSession({
+          id: sessionId,
+          name: data.name,
+          workspaceId: data.workspace_id ?? '', // Store requires string, empty means no workspace yet
+          branch: data.branch,
+          gitUrl: data.git_url,
+          agents: agentsWithBackendLayout,
+          conversationSessions: conversationsSynced, // Backend is source of truth - completely replace (synced with agents)
+          filePreviews: filePreviewsFromBackend, // Backend layout is source of truth
+          activeAgentId: layout.active_agent_id ?? null, // Backend is source of truth
+          viewMode: (layout.view_mode as 'grid' | 'focus' | 'freeform') || 'grid', // Backend is source of truth
+          workspaceStatus: data.status === 'active' ? 'running' : 'pending',
+          workspaceStatusChecking: false,
+          editorGridCardId: layout.editor_grid_card_id ?? null, // Backend is source of truth
+          editorGridSpan: layout.editor_grid_span
+            ? {
+                colSpan: layout.editor_grid_span.col_span ?? 2,
+                rowSpan: layout.editor_grid_span.row_span ?? 2,
+                colStart: layout.editor_grid_span.col_start,
+              }
+            : undefined,
+          editorFreeformPosition: layout.editor_freeform_position
+            ? {
+                x: layout.editor_freeform_position.x ?? 100,
+                y: layout.editor_freeform_position.y ?? 100,
+                width: layout.editor_freeform_position.width ?? 600,
+                height: layout.editor_freeform_position.height ?? 500,
+                zIndex: layout.editor_freeform_position.z_index ?? 1,
+              }
+            : undefined,
+          terminalWindows: [], // Terminal windows managed by frontend for now
+          activeWindowId: layout.active_agent_id ?? null, // Active window (agent or terminal)
+          localPodId: data.local_pod_id ?? null,
+          localPodName: data.local_pod_name ?? null,
+          mount_path: data.mount_path ?? null,
+        });
+
+        if (data.workspace_id) {
+          try {
+            if (data.status === 'active') {
+              setWorkspaceStatusChecking(sessionId, true);
+              useSessionStore.getState().setWorkspaceStatus(sessionId, 'pending');
+            }
+            const workspaceStatus = await getWorkspaceStatus(data.workspace_id);
+            if (!isCancelled) {
+              useSessionStore.getState().setWorkspaceStatus(sessionId, workspaceStatus.status);
+              setWorkspaceStatusChecking(sessionId, false);
+            }
+          } catch (statusError) {
+            console.warn('Failed to fetch workspace status:', statusError);
+            setWorkspaceStatusChecking(sessionId, false);
+          }
+        }
+
+        // Sync git branch from actual workspace state (handles local git changes)
+        // This runs for both cloud workspaces and local pods
+        if (data.status === 'active' && !isCancelled) {
+          try {
+            const gitStatus = await getGitStatus(sessionId);
+            if (!isCancelled && gitStatus.branch) {
+              const currentSession = useSessionStore.getState().sessions[sessionId];
+              if (currentSession && currentSession.branch !== gitStatus.branch) {
+                useSessionStore
+                  .getState()
+                  .updateSessionInfo(sessionId, { branch: gitStatus.branch });
+              }
+            }
+          } catch (gitError) {
+            // Git status fetch is best-effort - don't block session loading
+            console.warn('Failed to fetch git status for branch sync:', gitError);
+          }
+        }
+
+        // Check pod status
+        if (data.status === 'creating') {
+          setPodStatus('starting');
+          simulateStartup();
+        } else if (data.status === 'active') {
+          setPodStatus('running');
+          setLoadingProgress(100);
+        } else if (data.status === 'stopped') {
+          setPodStatus('stopped');
+        } else if (data.status === 'error') {
+          setPodStatus('error');
+          setError('Pod encountered an error');
+        }
+      } catch (err) {
+        if (isCancelled) return;
+        setError(err instanceof Error ? err.message : 'Failed to load session');
+        setPodStatus('error');
+      } finally {
+        if (!isCancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadSession();
+
+    // Cleanup on unmount or deps change
+    return () => {
+      isCancelled = true;
+      cleanupStartupSimulation();
+    };
+  }, [
+    sessionId,
+    user,
+    router,
+    createSession,
+    setWorkspaceStatusChecking,
+    isInitialized,
+    simulateStartup,
+    cleanupStartupSimulation,
+  ]);
+
+  // Cleanup restart timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (restartTimeoutRef.current) {
+        clearTimeout(restartTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Trigger onboarding tour when workspace first loads
+  useEffect(() => {
+    // Only trigger tour when workspace is fully loaded and visible
+    // Check loading progress to ensure startup simulation is complete
+    // Also check workspaceStatus to ensure WorkspaceStatusOverlay is not showing
+    if (
+      podStatus === 'running' &&
+      !loading &&
+      loadingProgress === 100 &&
+      workspaceStatus === 'running' &&
+      !hasTriggeredTourRef.current
+    ) {
+      hasTriggeredTourRef.current = true;
+
+      // Small delay to ensure UI is fully rendered
+      const timer = setTimeout(() => {
+        if (!hasCompleted('workspace-tour')) {
+          // Use mobile-specific tour steps on mobile devices
+          const tourSteps = isMobile ? MOBILE_WORKSPACE_TOUR_STEPS : WORKSPACE_TOUR_STEPS;
+          startTour(tourSteps, 'workspace-tour');
+        }
+      }, 800);
+
+      return () => clearTimeout(timer);
+    }
+    return undefined;
+  }, [podStatus, loading, loadingProgress, workspaceStatus, hasCompleted, startTour, isMobile]);
+
+  const handleRestart = async () => {
+    setRestarting(true);
+    setPodStatus('starting');
+    setLoadingProgress(0);
+    setCurrentLoadingMessage(defaultLoadingMessage);
+
+    // Simulate restart
+    simulateStartup();
+
+    // Clear any previous restart timeout
+    if (restartTimeoutRef.current) {
+      clearTimeout(restartTimeoutRef.current);
+    }
+    restartTimeoutRef.current = setTimeout(() => {
+      setRestarting(false);
+    }, 8000);
+  };
+
+  // Initial loading state
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-void flex items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="flex flex-col items-center gap-4"
+        >
+          <div className="relative">
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-accent-primary to-accent-secondary flex items-center justify-center">
+              <Zap className="w-8 h-8 text-white" />
+            </div>
+            <motion.div
+              animate={{ rotate: 360 }}
+              transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
+              className="absolute -inset-2 rounded-2xl border-2 border-accent-primary/20 border-t-accent-primary"
+            />
+          </div>
+          <p className="text-text-secondary">Loading session...</p>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Error state
+  if (error && podStatus === 'error') {
+    return (
+      <div className="min-h-screen bg-void flex items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="text-center max-w-md"
+        >
+          <div className="w-16 h-16 rounded-2xl bg-accent-error/10 flex items-center justify-center mx-auto mb-4">
+            <AlertCircle className="w-8 h-8 text-accent-error" />
+          </div>
+          <h2 className="text-xl font-semibold text-text-primary mb-2">Unable to connect to pod</h2>
+          <p className="text-text-secondary mb-6">{error}</p>
+          <div className="flex gap-3 justify-center">
+            <Button variant="secondary" onClick={() => router.push('/dashboard')}>
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Back to Dashboard
+            </Button>
+            <Button onClick={handleRestart}>
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Try Again
+            </Button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Stopped state
+  if (podStatus === 'stopped') {
+    return (
+      <div className="min-h-screen bg-void flex items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="text-center max-w-md"
+        >
+          <div className="w-16 h-16 rounded-2xl bg-overlay flex items-center justify-center mx-auto mb-4">
+            <Server className="w-8 h-8 text-text-muted" />
+          </div>
+          <h2 className="text-xl font-semibold text-text-primary mb-2">Pod is stopped</h2>
+          <p className="text-text-secondary mb-2">
+            {session?.name || 'This workspace'} is currently not running.
+          </p>
+          {session?.git_url && (
+            <div className="flex items-center justify-center gap-2 text-sm text-text-muted mb-6">
+              <GitBranch className="w-4 h-4" />
+              {session.branch}
+            </div>
+          )}
+          <div className="flex gap-3 justify-center">
+            <Button variant="secondary" onClick={() => router.push('/dashboard')}>
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Back
+            </Button>
+            <Button onClick={handleRestart} disabled={restarting}>
+              {restarting ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="w-4 h-4 mr-2" />
+              )}
+              Start Pod
+            </Button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Starting state - beautiful loading screen
+  if (podStatus === 'starting') {
+    return (
+      <div className="min-h-screen bg-void flex items-center justify-center">
+        {/* Background effects */}
+        <div className="fixed inset-0 -z-10 overflow-hidden">
+          <motion.div
+            animate={{
+              scale: [1, 1.2, 1],
+              opacity: [0.3, 0.5, 0.3],
+            }}
+            transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
+            className="absolute top-1/3 left-1/3 h-[600px] w-[600px] rounded-full bg-accent-primary/10 blur-3xl"
+          />
+          <motion.div
+            animate={{
+              scale: [1.2, 1, 1.2],
+              opacity: [0.3, 0.5, 0.3],
+            }}
+            transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut', delay: 2 }}
+            className="absolute bottom-1/3 right-1/3 h-[600px] w-[600px] rounded-full bg-accent-secondary/10 blur-3xl"
+          />
+        </div>
+
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="text-center max-w-lg px-6"
+        >
+          {/* Animated Logo */}
+          <div className="relative mx-auto mb-8 w-fit">
+            <motion.div
+              animate={{ rotate: 360 }}
+              transition={{ duration: 20, repeat: Infinity, ease: 'linear' }}
+              className="absolute -inset-8 opacity-20"
+            >
+              {[...Array(8)].map((_, i) => (
+                <motion.div
+                  key={i}
+                  className="absolute w-2 h-2 rounded-full bg-accent-primary"
+                  style={{
+                    top: '50%',
+                    left: '50%',
+                    transform: `rotate(${i * 45}deg) translateX(40px) translateY(-50%)`,
+                  }}
+                  animate={{
+                    opacity: [0.2, 1, 0.2],
+                    scale: [0.8, 1.2, 0.8],
+                  }}
+                  transition={{
+                    duration: 2,
+                    repeat: Infinity,
+                    delay: i * 0.2,
+                  }}
+                />
+              ))}
+            </motion.div>
+            <div className="w-24 h-24 rounded-3xl bg-gradient-to-br from-accent-primary to-accent-secondary flex items-center justify-center relative z-10">
+              <motion.div
+                animate={{ rotate: 360 }}
+                transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
+              >
+                <Loader2 className="w-12 h-12 text-white" />
+              </motion.div>
+            </div>
+          </div>
+
+          {/* Session Name */}
+          <motion.h1
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-2xl font-bold text-text-primary mb-2"
+          >
+            {session?.name || 'Starting Pod'}
+          </motion.h1>
+
+          {/* Current Status */}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={currentLoadingMessage.message}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="mb-2"
+            >
+              <p className="text-text-secondary text-lg">{currentLoadingMessage.message}</p>
+              <p className="text-text-muted text-sm">{currentLoadingMessage.detail}</p>
+            </motion.div>
+          </AnimatePresence>
+
+          {/* Progress Bar */}
+          <div className="mt-8 mb-4">
+            <div className="w-full bg-overlay rounded-full h-2 overflow-hidden">
+              <motion.div
+                initial={{ width: 0 }}
+                animate={{ width: `${loadingProgress}%` }}
+                transition={{ duration: 0.5, ease: 'easeOut' }}
+                className="h-full bg-gradient-to-r from-accent-primary to-accent-secondary rounded-full relative"
+              >
+                <motion.div
+                  animate={{ x: ['-100%', '100%'] }}
+                  transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+                  className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent"
+                />
+              </motion.div>
+            </div>
+            <p className="text-sm text-text-muted mt-2">{loadingProgress}%</p>
+          </div>
+
+          {/* Status Steps */}
+          <div className="flex justify-center gap-4 mt-6 text-xs text-text-muted">
+            {['Pod', 'Workspace', 'Config'].map((step, i) => {
+              const stepProgress = i === 0 ? 20 : i === 1 ? 60 : 95;
+              const isComplete = loadingProgress >= stepProgress;
+              const isActive =
+                loadingProgress < stepProgress &&
+                loadingProgress >= (i === 0 ? 0 : i === 1 ? 20 : 60);
+
+              return (
+                <div key={step} className="flex items-center gap-1.5">
+                  <div
+                    className={`w-4 h-4 rounded-full flex items-center justify-center ${
+                      isComplete
+                        ? 'bg-accent-success text-white'
+                        : isActive
+                          ? 'bg-accent-primary/20 text-accent-primary'
+                          : 'bg-overlay text-text-muted'
+                    }`}
+                  >
+                    {isComplete ? (
+                      <Check className="w-2.5 h-2.5" />
+                    ) : isActive ? (
+                      <motion.div
+                        animate={{ opacity: [1, 0.5, 1] }}
+                        transition={{ duration: 1, repeat: Infinity }}
+                        className="w-1.5 h-1.5 rounded-full bg-current"
+                      />
+                    ) : (
+                      <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                    )}
+                  </div>
+                  <span className={isComplete || isActive ? 'text-text-secondary' : ''}>
+                    {step}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Cancel button */}
+          <button
+            onClick={() => router.push('/dashboard')}
+            className="mt-8 text-sm text-text-muted hover:text-text-secondary transition-colors"
+          >
+            Cancel and return to dashboard
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Running state - show workspace
+  return (
+    <WorkspaceLayout sessionId={sessionId}>
+      <AgentGrid sessionId={sessionId} />
+      <CommandPalette />
+    </WorkspaceLayout>
+  );
+}

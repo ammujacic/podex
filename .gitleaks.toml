@@ -1,0 +1,26 @@
+# Gitleaks configuration for Podex
+# This file excludes false positives from the secret scanning
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Global allowlist for Podex false positives"
+
+# Paths to exclude from scanning (regex patterns)
+paths = [
+    # Keybindings file uses 'key' field for keyboard shortcuts, not API keys
+    '''apps/web/src/lib/keybindings/.*\.ts$''',
+    # Test files that contain fake secrets for testing redaction/masking functionality
+    '''services/api/tests/unit/middleware/test_logging_filter_unit\.py$''',
+    '''services/local-pod/tests/test_user_config\.py$''',
+]
+
+# Regex patterns to allow (match content that looks like secrets but aren't)
+regexes = [
+    # Test tokens used in unit tests
+    '''pdx_pod_secret123''',
+    '''pdx_pod_[a-z0-9]+''',
+    # Push notification P256DH key assignment in push.py (not a secret, just code)
+    '''existing\.p256dh_key = ''',
+]

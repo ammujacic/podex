@@ -1,0 +1,855 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20'
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  # ==========================================
+  # Frontend Lint & Type Check (runs first)
+  # ==========================================
+  frontend-lint:
+    name: Frontend Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run ESLint
+        run: pnpm lint
+
+  frontend-typecheck:
+    name: Frontend Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run TypeScript
+        run: pnpm typecheck
+
+  frontend-format:
+    name: Frontend Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting
+        run: pnpm format:check
+
+  # Frontend package tests with coverage
+  frontend-packages-test:
+    name: Frontend Package Tests
+    runs-on: ubuntu-latest
+    needs: [frontend-lint, frontend-typecheck, frontend-format]
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [shared, api-client, state, ui, local-pod-discovery]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests with coverage (80% required)
+        run: pnpm --filter @podex/${{ matrix.package }} test:coverage
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-package-${{ matrix.package }}
+          path: packages/${{ matrix.package }}/coverage/coverage-summary.json
+          retention-days: 7
+
+  # CLI unit tests with coverage (separate because package name is 'podex' not '@podex/cli')
+  cli-test:
+    name: CLI Unit Tests
+    runs-on: ubuntu-latest
+    needs: [frontend-lint, frontend-typecheck, frontend-format]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests with coverage
+        working-directory: apps/cli
+        run: pnpm vitest run --coverage
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-cli
+          path: apps/cli/coverage/coverage-summary.json
+          retention-days: 7
+
+  # VSCode extension tests
+  vscode-extension-test:
+    name: VSCode Extension Tests
+    runs-on: ubuntu-latest
+    needs: [frontend-lint, frontend-typecheck, frontend-format]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm typecheck
+        working-directory: apps/vscode
+
+      - name: Run unit tests
+        run: pnpm test
+        working-directory: apps/vscode
+
+      - name: Run unit tests with coverage
+        run: pnpm test:coverage
+        working-directory: apps/vscode
+
+      - name: Build extension
+        run: pnpm build
+        working-directory: apps/vscode
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-vscode
+          path: apps/vscode/coverage/coverage-summary.json
+          retention-days: 7
+
+  # CLI E2E Tests
+  cli-e2e-test:
+    name: CLI E2E Tests
+    runs-on: ubuntu-latest
+    needs: [cli-test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build CLI
+        run: pnpm build
+        working-directory: apps/cli
+
+      - name: Run CLI E2E tests
+        run: pnpm test:e2e
+        working-directory: apps/cli
+
+  # Frontend unit tests with coverage
+  frontend-test:
+    name: Frontend App Tests
+    runs-on: ubuntu-latest
+    needs: [frontend-packages-test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run unit tests with coverage
+        run: pnpm test:coverage
+        working-directory: apps/web
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-web
+          path: apps/web/coverage/coverage-summary.json
+          retention-days: 7
+
+  # ==========================================
+  # Backend Lint & Type Check (runs first)
+  # ==========================================
+  backend-lint:
+    name: Backend Lint (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api, agent, compute, shared, local-pod]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run Ruff check
+        run: uv run ruff check src/
+
+      - name: Run Ruff format check
+        run: uv run ruff format --check src/
+
+  backend-typecheck:
+    name: Backend Type Check (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api, agent, compute, shared, local-pod]
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run mypy
+        run: uv run mypy src/
+
+  # Backend API service tests
+  backend-api-test:
+    name: Backend API Tests
+    runs-on: ubuntu-latest
+    needs: [backend-lint, backend-typecheck]
+    defaults:
+      run:
+        working-directory: services/api
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: podex_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/podex_test
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET_KEY: test-secret-key-for-ci
+      ENVIRONMENT: test
+      INTERNAL_SERVICE_TOKEN: test-internal-service-token
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-api
+          path: services/api/coverage.xml
+          retention-days: 7
+
+  # Backend Agent service tests
+  backend-agent-test:
+    name: Backend Agent Tests
+    runs-on: ubuntu-latest
+    needs: [backend-lint, backend-typecheck]
+    defaults:
+      run:
+        working-directory: services/agent
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: podex_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/podex_test
+      REDIS_URL: redis://localhost:6379
+      ENVIRONMENT: test
+      ANTHROPIC_API_KEY: sk-ant-test-mock-key
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-agent
+          path: services/agent/coverage.xml
+          retention-days: 7
+
+  # Backend Compute service tests
+  backend-compute-test:
+    name: Backend Compute Tests
+    runs-on: ubuntu-latest
+    needs: [backend-lint, backend-typecheck]
+    defaults:
+      run:
+        working-directory: services/compute
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      REDIS_URL: redis://localhost:6379
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-compute
+          path: services/compute/coverage.xml
+          retention-days: 7
+
+  # Backend Shared library tests (with integration tests)
+  backend-shared-test:
+    name: Backend Shared Tests
+    runs-on: ubuntu-latest
+    needs: [backend-lint, backend-typecheck]
+    defaults:
+      run:
+        working-directory: services/shared
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      REDIS_URL: redis://localhost:6379
+      RUN_INTEGRATION_TESTS: "true"
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-shared
+          path: services/shared/coverage.xml
+          retention-days: 7
+
+  # Backend Local-Pod service tests
+  backend-local-pod-test:
+    name: Backend Local-Pod Tests
+    runs-on: ubuntu-latest
+    needs: [backend-lint, backend-typecheck]
+    defaults:
+      run:
+        working-directory: services/local-pod
+    env:
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-local-pod
+          path: services/local-pod/coverage.xml
+          retention-days: 7
+
+  # ==========================================
+  # E2E Tests (Playwright)
+  # ==========================================
+  e2e-test:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: [frontend-test, backend-api-test]
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: podex_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/podex_test
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET_KEY: test-secret-key-for-ci
+      ENVIRONMENT: test
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      PLAYWRIGHT_BASE_URL: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install backend dependencies
+        run: uv sync --extra dev
+        working-directory: services/api
+
+      - name: Install Playwright browsers
+        run: pnpm exec playwright install --with-deps chromium
+        working-directory: apps/web
+
+      - name: Build frontend
+        run: pnpm build
+        working-directory: apps/web
+
+      - name: Start API server
+        run: |
+          cd services/api
+          uv run uvicorn src.main:app --host 0.0.0.0 --port 3001 &
+          sleep 10
+
+      - name: Start frontend server
+        run: |
+          cd apps/web
+          pnpm start &
+          sleep 10
+
+      - name: Run E2E tests
+        run: pnpm test:e2e
+        working-directory: apps/web
+
+      - name: Upload E2E test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 30
+
+      - name: Upload test screenshots
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: apps/web/test-results/
+          retention-days: 30
+
+  # ==========================================
+  # Security Scanning
+  # ==========================================
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'  # Fail CI on CRITICAL or HIGH vulnerabilities
+          ignore-unfixed: true  # Only fail on vulnerabilities that have fixes available
+
+      - name: Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        # Only run on pushes, not pull requests (PR scanning requires additional permissions)
+        if: github.event_name == 'push'
+
+  # ==========================================
+  # Build Verification (runs after all checks pass)
+  # ==========================================
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    needs: [frontend-test]
+    env:
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+      SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+      NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
+      NEXT_PUBLIC_SENTRY_RELEASE: ${{ vars.SENTRY_RELEASE || 'podex-web@0.1.0' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+  docker-build:
+    name: Docker Build Test (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: [backend-api-test, backend-agent-test]
+    strategy:
+      matrix:
+        include:
+          - service: api
+            dockerfile: ./services/api/Dockerfile
+            context: .
+            target: production
+          - service: agent
+            dockerfile: ./services/agent/Dockerfile
+            context: .
+            target: production
+          - service: compute
+            dockerfile: ./services/compute/Dockerfile
+            context: .
+            target: production
+          - service: web
+            dockerfile: ./apps/web/Dockerfile
+            context: .
+            target: production
+          - service: grafana
+            dockerfile: ./docker/monitoring/grafana/Dockerfile
+            context: ./docker/monitoring/grafana
+            target: ''
+          - service: prometheus
+            dockerfile: ./docker/monitoring/prometheus/Dockerfile
+            context: ./docker/monitoring/prometheus
+            target: ''
+          - service: loki
+            dockerfile: ./docker/monitoring/loki/Dockerfile
+            context: ./docker/monitoring/loki
+            target: ''
+          - service: promtail
+            dockerfile: ./docker/monitoring/promtail/Dockerfile
+            context: ./docker/monitoring/promtail
+            target: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ==========================================
+  # All Tests Pass Gate
+  # ==========================================
+  all-tests-pass:
+    name: All Tests Pass
+    runs-on: ubuntu-latest
+    needs:
+      - frontend-packages-test
+      - cli-test
+      - vscode-extension-test
+      - frontend-test
+      - cli-e2e-test
+      - backend-api-test
+      - backend-agent-test
+      - backend-compute-test
+      - backend-shared-test
+      - backend-local-pod-test
+      - e2e-test
+      - frontend-build
+      - docker-build
+      - security-scan
+    steps:
+      - name: Download all coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: coverage-reports
+          merge-multiple: false
+
+      - name: Coverage Summary
+        run: |
+          echo "=============================================="
+          echo "           COVERAGE SUMMARY                   "
+          echo "=============================================="
+          echo ""
+          printf "%-25s %8s %8s %8s %8s\n" "Component" "Lines" "Stmts" "Branch" "Target"
+          printf "%-25s %8s %8s %8s %8s\n" "-------------------------" "--------" "--------" "--------" "--------"
+
+          # Function to parse Vitest JSON coverage (frontend)
+          parse_vitest_coverage() {
+            local name=$1
+            local file=$2
+            if [ -f "$file" ]; then
+              lines=$(jq -r '.total.lines.pct // "N/A"' "$file" 2>/dev/null || echo "N/A")
+              stmts=$(jq -r '.total.statements.pct // "N/A"' "$file" 2>/dev/null || echo "N/A")
+              branches=$(jq -r '.total.branches.pct // "N/A"' "$file" 2>/dev/null || echo "N/A")
+              printf "%-25s %7.1f%% %7.1f%% %7.1f%% %8s\n" "$name" "$lines" "$stmts" "$branches" "80%"
+            else
+              printf "%-25s %8s %8s %8s %8s\n" "$name" "N/A" "N/A" "N/A" "80%"
+            fi
+          }
+
+          # Function to parse pytest XML coverage (backend)
+          parse_pytest_coverage() {
+            local name=$1
+            local file=$2
+            if [ -f "$file" ]; then
+              # Extract line-rate and branch-rate from coverage XML
+              line_rate=$(grep -o 'line-rate="[^"]*"' "$file" | head -1 | grep -o '[0-9.]*' || echo "0")
+              branch_rate=$(grep -o 'branch-rate="[^"]*"' "$file" | head -1 | grep -o '[0-9.]*' || echo "0")
+              lines_pct=$(echo "$line_rate * 100" | bc -l 2>/dev/null || echo "N/A")
+              branch_pct=$(echo "$branch_rate * 100" | bc -l 2>/dev/null || echo "N/A")
+              printf "%-25s %7.1f%% %8s %7.1f%% %8s\n" "$name" "$lines_pct" "-" "$branch_pct" "80%"
+            else
+              printf "%-25s %8s %8s %8s %8s\n" "$name" "N/A" "-" "N/A" "80%"
+            fi
+          }
+
+          echo ""
+          echo "Frontend Packages:"
+          parse_vitest_coverage "  @podex/shared" "coverage-reports/coverage-package-shared/coverage-summary.json"
+          parse_vitest_coverage "  @podex/api-client" "coverage-reports/coverage-package-api-client/coverage-summary.json"
+          parse_vitest_coverage "  @podex/state" "coverage-reports/coverage-package-state/coverage-summary.json"
+          parse_vitest_coverage "  @podex/ui" "coverage-reports/coverage-package-ui/coverage-summary.json"
+          parse_vitest_coverage "  @podex/local-pod-disc" "coverage-reports/coverage-package-local-pod-discovery/coverage-summary.json"
+
+          echo ""
+          echo "Frontend Apps:"
+          parse_vitest_coverage "  web" "coverage-reports/coverage-web/coverage-summary.json"
+          parse_vitest_coverage "  cli" "coverage-reports/coverage-cli/coverage-summary.json"
+          parse_vitest_coverage "  vscode" "coverage-reports/coverage-vscode/coverage-summary.json"
+
+          echo ""
+          echo "Backend Services:"
+          parse_pytest_coverage "  api" "coverage-reports/coverage-api/coverage.xml"
+          parse_pytest_coverage "  agent" "coverage-reports/coverage-agent/coverage.xml"
+          parse_pytest_coverage "  compute" "coverage-reports/coverage-compute/coverage.xml"
+          parse_pytest_coverage "  shared" "coverage-reports/coverage-shared/coverage.xml"
+          parse_pytest_coverage "  local-pod" "coverage-reports/coverage-local-pod/coverage.xml"
+
+          echo ""
+          echo "=============================================="
+          echo "All tests passed successfully!"
+          echo "=============================================="

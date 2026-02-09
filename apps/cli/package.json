@@ -1,0 +1,92 @@
+{
+  "name": "podex",
+  "version": "0.1.0",
+  "description": "Podex CLI - AI-powered development assistant",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "podex": "./dist/bin/podex.js"
+  },
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "tsx watch bin/podex.ts",
+    "build": "tsup && chmod +x dist/bin/podex.js",
+    "start": "node dist/bin/podex.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest watch",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:all": "pnpm test && pnpm test:e2e",
+    "clean": "rm -rf dist coverage"
+  },
+  "dependencies": {
+    "@inkjs/ui": "^2.0.0",
+    "@podex/api-client": "workspace:*",
+    "@podex/local-pod-discovery": "workspace:*",
+    "@podex/shared": "workspace:*",
+    "@podex/state": "workspace:*",
+    "chalk": "^5.4.1",
+    "cli-highlight": "^2.1.11",
+    "commander": "^13.1.0",
+    "figlet": "^1.8.0",
+    "gradient-string": "^3.0.0",
+    "ink": "^6.6.0",
+    "ink-spinner": "^5.0.0",
+    "marked": "^15.0.7",
+    "marked-terminal": "^7.3.0",
+    "open": "^10.1.0",
+    "qrcode-terminal": "^0.12.0",
+    "react": "^19.2.3",
+    "socket.io-client": "^4.8.3",
+    "zustand": "^5.0.10"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@testing-library/react": "^16.3.2",
+    "@types/figlet": "^1.7.0",
+    "@types/gradient-string": "^1.1.6",
+    "@types/node": "^20.11.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "@types/react": "^19.2.8",
+    "@types/react-dom": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "@vitest/coverage-v8": "^2.1.8",
+    "eslint": "^9.39.2",
+    "fastify": "^5.2.1",
+    "ink-testing-library": "^4.0.0",
+    "tsup": "^8.4.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.53.0",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "podex",
+    "cli",
+    "ai",
+    "coding",
+    "assistant",
+    "development"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/podex/podex"
+  },
+  "author": "Podex <support@podex.dev>"
+}

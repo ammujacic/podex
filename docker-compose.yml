@@ -1,0 +1,345 @@
+services:
+  # === DATABASE ===
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-podex}
+      POSTGRES_USER: ${POSTGRES_USER:-podex}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdev_change_in_prod}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/db-init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U podex -d podex"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # === CACHE ===
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # === SENTRY SPOTLIGHT (Local Dev Debugging) ===
+  # Provides local UI for viewing Sentry events without sending to cloud
+  spotlight:
+    image: ghcr.io/getsentry/spotlight:latest
+    container_name: spotlight
+    ports:
+      - "8969:8969"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8969/stream"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # === LOCAL LLM (Ollama) - Optional ===
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    profiles:
+      - ollama  # Only start when explicitly requested
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # === API SERVICE ===
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+      target: development
+    ports:
+      - "3001:3001"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+    environment:
+      ENVIRONMENT: development
+      PORT: 3001
+      RUN_MIGRATIONS: "false"  # Local dev uses SQLAlchemy create_all()
+      DATABASE_URL: postgresql+asyncpg://podex:${POSTGRES_PASSWORD:-localdev_change_in_prod}@postgres:5432/podex
+      REDIS_URL: redis://redis:6379
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}
+      # Voice Provider: local (pyttsx3/whisper), openai, google
+      VOICE_PROVIDER: ${VOICE_PROVIDER:-local}
+      # CORS
+      CORS_ORIGINS: ${CORS_ORIGINS:-'["http://localhost:3000"]'}
+      # Auth
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-key-for-local-development}
+      FRONTEND_URL: http://localhost:3000
+      # OAuth (optional)
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      # Email (console logging for dev)
+      EMAIL_BACKEND: console
+      # Admin user credentials (for seeding)
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@podex.dev}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-LocalDev_Change_In_Prod_123!}
+      # Internal service URLs
+      AGENT_SERVICE_URL: http://agent:3002
+      # Stripe (for billing)
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+      # Internal service token for billing usage recording
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-service-token}
+      # Sentry
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
+      SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-1.0}
+      SENTRY_SPOTLIGHT_URL: http://spotlight:8969
+      # Auth Cookies (httpOnly cookies for XSS protection)
+      COOKIE_SECURE: "false"
+      COOKIE_SAMESITE: "lax"
+      # Redis Encryption (optional)
+      REDIS_ENCRYPTION_KEY: ${REDIS_ENCRYPTION_KEY:-}
+      # Push Notifications (VAPID keys for Web Push)
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_EMAIL: ${VAPID_EMAIL:-}
+    volumes:
+      - ./services/api/src:/app/services/api/src
+      - ./services/api/migrations:/app/services/api/migrations
+      - ./services/shared/src:/app/services/shared/src
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # === AGENT SERVICE ===
+  agent:
+    build:
+      context: .
+      dockerfile: services/agent/Dockerfile
+      target: development
+    ports:
+      - "3002:3002"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+    environment:
+      ENVIRONMENT: development
+      PORT: 3002
+      DATABASE_URL: postgresql+asyncpg://podex:${POSTGRES_PASSWORD:-localdev_change_in_prod}@postgres:5432/podex
+      REDIS_URL: redis://redis:6379
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:14b}
+      # Sentry
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
+      SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-1.0}
+      SENTRY_SPOTLIGHT_URL: http://spotlight:8969
+      # API Service (for usage tracking)
+      API_BASE_URL: http://api:3001
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-service-token}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./services/agent/src:/app/services/agent/src
+      - ./services/shared/src:/app/services/shared/src
+    depends_on:
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+
+  # === WORKSPACE SERVERS (Docker-in-Docker) ===
+  # These simulate remote workspace servers for local development.
+  # In production, these would be separate Hetzner servers with TLS.
+  ws-local-1:
+    image: docker:27-dind
+    container_name: ws-local-1
+    privileged: true
+    command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--tls=false"]
+    expose:
+      - "2375"
+    volumes:
+      - ws-local-1-data:/var/lib/docker
+      - ws-local-1-workspaces:/var/lib/podex/workspaces
+    healthcheck:
+      test: ["CMD", "docker", "-H", "tcp://localhost:2375", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  ws-local-2:
+    image: docker:27-dind
+    container_name: ws-local-2
+    privileged: true
+    command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--tls=false"]
+    expose:
+      - "2375"
+    volumes:
+      - ws-local-2-data:/var/lib/docker
+      - ws-local-2-workspaces:/var/lib/podex/workspaces
+    healthcheck:
+      test: ["CMD", "docker", "-H", "tcp://localhost:2375", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # === COMPUTE SERVICE ===
+  compute:
+    build:
+      context: .
+      dockerfile: services/compute/Dockerfile
+      target: development
+    ports:
+      - "3003:3003"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+    environment:
+      COMPUTE_ENVIRONMENT: development
+      # Workspace servers are now configured via API database (admin UI)
+      # Compute service fetches server list from API at startup and syncs periodically
+      # Container runtime (null for DinD default, 'runsc' for gVisor in production)
+      COMPUTE_DOCKER_RUNTIME: ${COMPUTE_DOCKER_RUNTIME:-}
+      COMPUTE_MAX_WORKSPACES: 10
+      COMPUTE_WORKSPACE_TIMEOUT: 3600
+      # Workspace data path - use tmp for local dev (workspaces are ephemeral)
+      COMPUTE_WORKSPACE_DATA_PATH: /tmp/podex/workspaces
+      COMPUTE_WORKSPACE_IMAGE: podex/workspace:latest
+      # Workspace images per architecture (for production, use your registry)
+      # Multi-arch manifests auto-select correct arch, so both can point to same image
+      COMPUTE_WORKSPACE_IMAGE_ARM64: ${COMPUTE_WORKSPACE_IMAGE_ARM64:-podex/workspace:latest-arm64}
+      COMPUTE_WORKSPACE_IMAGE_AMD64: ${COMPUTE_WORKSPACE_IMAGE_AMD64:-podex/workspace:latest-amd64}
+      # Redis
+      COMPUTE_REDIS_URL: redis://redis:6379
+      # CORS
+      COMPUTE_CORS_ORIGINS: ${CORS_ORIGINS:-'["http://localhost:3000"]'}
+      # API Service (for usage tracking)
+      COMPUTE_API_BASE_URL: http://api:3001
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-internal-service-token}
+      # Sentry
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-1.0}
+      SENTRY_PROFILES_SAMPLE_RATE: ${SENTRY_PROFILES_SAMPLE_RATE:-1.0}
+      SENTRY_SPOTLIGHT_URL: http://spotlight:8969
+    volumes:
+      - ./services/compute/src:/app/services/compute/src
+      - ./services/shared/src:/app/services/shared/src
+      # Note: No docker.sock mount - we connect to workspace servers over the network
+      # TLS certificates for secure Docker API connections to workspace servers
+      # This directory must contain client certs (cert.pem, key.pem, ca.pem) for each server
+      # Create empty dir locally: mkdir -p /etc/docker/workspace-certs
+      - /etc/docker/workspace-certs:/etc/docker/workspace-certs:ro
+    depends_on:
+      api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ws-local-1:
+        condition: service_healthy
+      ws-local-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # === USER WORKSPACE IMAGE (build only) ===
+  workspace-base:
+    build:
+      context: ./docker/workspace
+      dockerfile: Dockerfile
+    image: podex/workspace:latest
+    profiles:
+      - build  # Only build, don't run
+
+  # === WEB FRONTEND ===
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: development
+    ports:
+      - "3000:3000"
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '4.0'
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+      # Feature flags
+      NEXT_PUBLIC_COMING_SOON_MODE: ${NEXT_PUBLIC_COMING_SOON_MODE:-true}
+      # Sentry
+      NEXT_PUBLIC_SENTRY_DSN: ${NEXT_PUBLIC_SENTRY_DSN:-}
+      NEXT_PUBLIC_ENVIRONMENT: development
+      SENTRY_ORG: ${SENTRY_ORG:-}
+      SENTRY_PROJECT: ${SENTRY_PROJECT:-}
+      SENTRY_AUTH_TOKEN: ${SENTRY_AUTH_TOKEN:-}
+      # Push Notifications
+      NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+    volumes:
+      - ./apps/web/src:/app/apps/web/src
+      - ./packages:/app/packages
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  redis_data:
+  ollama_data:
+  # Workspace server volumes (DinD)
+  ws-local-1-data:
+  ws-local-1-workspaces:
+  ws-local-2-data:
+  ws-local-2-workspaces:
+
+networks:
+  default:
+    name: podex-dev
